@@ -4,8 +4,15 @@ Swift implementation of a Clash rule parsing/matching engine. **Planning stage: 
 
 ## Current state
 
-- No `Package.swift`, no Sources, no tests. Do not assume commands like `swift test` exist until you scaffold them (M1 milestone in `PLAN.md` §8).
-- Not a git repo yet (`git init` + a `.gitignore` are part of scaffolding).
+- **M1 milestone is implemented**: `Package.swift` + `ClashRuleCore` (Parser / Compiler / flat structures / Matcher) + Swift Testing suite. No C ABI, NIO target, RULE-SET/GEOIP/logic rules yet (see `PLAN.md` §8 milestones).
+- Commands: `swift build`, `swift test` (27 tests, Swift Testing framework, `@testable import ClashRuleCore`). Debug fixture helpers live at the top of `Tests/ClashRuleCoreTests/CoreTests.swift`.
+- Not committed blindly: run `swift test` before every commit; performance/RAM targets (§7) are CI-blocking once benchmarks land in M5.
+
+## Toolchain reality check (verified on this machine)
+
+- Toolchain: Swift 6.4 (Xcode 27). Package deployment target: macOS 15 / iOS 18 — required for `UInt128`.
+- **SE-0456 span convenience properties (`Array.span`, `Data.bytes`) are gated to macOS 26+ / iOS 26+.** Therefore the primary public API takes `UnsafeRawBufferPointer` (compile) / `UnsafeBufferPointer<UInt8>` (match domain); the `Span`/`RawSpan` overloads exist behind `@available(macOS 26, iOS 26, *)`. Don't "clean up" the buffer-pointer API away.
+- `ContiguousArray` is not `Comparable`; `[UInt8]` is not `Comparable` either — use `lexLess` (Bytes.swift), not `.sorted()`.
 
 ## Non-negotiable design constraints
 
