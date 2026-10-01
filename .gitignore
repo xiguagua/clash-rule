@@ -1,0 +1,20 @@
+# SwiftPM / Swift
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+xcuserdata/
+DerivedData/
+
+# Compiled output
+*.o
+*.dylib
+*.a
+
+# macOS
+.DS_Store
+
+# Benchmarks / coverage artifacts
+.benchmarks/
+*.gcda
+*.lcov
