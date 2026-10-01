@@ -11,7 +11,7 @@ Swift implementation of a Clash rule parsing/matching engine. **Planning stage: 
 ## Toolchain reality check (verified on this machine)
 
 - Toolchain: Swift 6.4 (Xcode 27). Package deployment target: macOS 15 / iOS 18 — required for `UInt128`.
-- **SE-0456 span convenience properties (`Array.span`, `Data.bytes`) are gated to macOS 26+ / iOS 26+.** Therefore the primary public API takes `UnsafeRawBufferPointer` (compile) / `UnsafeBufferPointer<UInt8>` (match domain); the `Span`/`RawSpan` overloads exist behind `@available(macOS 26, iOS 26, *)`. Don't "clean up" the buffer-pointer API away.
+- **SE-0456 span convenience properties (`Array.span`, `Data.bytes`) are gated to macOS 26+ / iOS 26+** — an Apple-OS-runtime gate only (apps use the OS-shipped Swift runtime on Darwin). **Linux has no OS-version gate**: those properties work with any Swift 6.2+ toolchain, and the `@available(macOS 26, iOS 26, *)` annotations are inert there. So Linux consumers get the full Span zero-copy path today; the `UnsafeRawBufferPointer`/`UnsafeBufferPointer<UInt8>` baseline overloads exist for Apple hosts below 26. Don't "clean up" the buffer-pointer API away.
 - `ContiguousArray` is not `Comparable`; `[UInt8]` is not `Comparable` either — use `lexLess` (Bytes.swift), not `.sorted()`.
 
 ## Non-negotiable design constraints
