@@ -140,10 +140,11 @@ struct RuleParser {
         b == 0x20 || b == 0x09
     }
 
+    private static let noResolvePattern: [UInt8] = [0x6E, 0x6F, 0x2D, 0x72, 0x65, 0x73, 0x6F, 0x6C, 0x76, 0x65] // "no-resolve"
+
     private static func isNoResolve(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> Bool {
         guard r.count == 10 else { return false }
-        let pattern: [UInt8] = [0x6E, 0x6F, 0x2D, 0x72, 0x65, 0x73, 0x6F, 0x6C, 0x76, 0x65] // "no-resolve"
-        for (k, i) in zip(pattern, r) where raw[i] != k { return false }
+        for (k, i) in zip(noResolvePattern, r) where raw[i] != k { return false }
         return true
     }
 
@@ -217,20 +218,26 @@ struct RuleParser {
     }
 
     private static func parseDecimal(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, max: UInt32, what: String, line: Int, base: Int
+        _ raw: UnsafeRawBufferPointer,
+        _ r: Range<Int>,
+        max: UInt32,
+        what: String,
+        errorCode: RuleParseError.Code = .invalidArgument,
+        line: Int,
+        base: Int
     ) throws(RuleParseError) -> UInt32 {
         guard !r.isEmpty else {
-            throw RuleParseError(.invalidArgument, line: line, column: r.lowerBound - base + 1, "empty \(what)")
+            throw RuleParseError(errorCode, line: line, column: r.lowerBound - base + 1, "empty \(what)")
         }
         var value: UInt32 = 0
         for i in r {
             let b = raw[i]
             guard b >= 0x30 && b <= 0x39 else {
-                throw RuleParseError(.invalidArgument, line: line, column: i - base + 1, "non-digit in \(what)")
+                throw RuleParseError(errorCode, line: line, column: i - base + 1, "non-digit in \(what)")
             }
             value = value &* 10 &+ UInt32(b - 0x30)
             if value > max {
-                throw RuleParseError(.invalidArgument, line: line, column: i - base + 1, "\(what) exceeds \(max)")
+                throw RuleParseError(errorCode, line: line, column: i - base + 1, "\(what) exceeds \(max)")
             }
         }
         return value
@@ -390,20 +397,6 @@ struct RuleParser {
     private static func parsePortValue(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
     ) throws(RuleParseError) -> UInt32 {
-        guard !r.isEmpty else {
-            throw RuleParseError(.invalidPort, line: line, column: r.lowerBound - base + 1, "empty port")
-        }
-        var value: UInt32 = 0
-        for i in r {
-            let b = raw[i]
-            guard b >= 0x30 && b <= 0x39 else {
-                throw RuleParseError(.invalidPort, line: line, column: i - base + 1, "non-digit in port")
-            }
-            value = value &* 10 &+ UInt32(b - 0x30)
-            if value > 65535 {
-                throw RuleParseError(.invalidPort, line: line, column: i - base + 1, "port exceeds 65535")
-            }
-        }
-        return value
+        try parseDecimal(raw, r, max: 65535, what: "port", errorCode: .invalidPort, line: line, base: base)
     }
 }

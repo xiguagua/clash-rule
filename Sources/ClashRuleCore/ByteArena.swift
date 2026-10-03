@@ -15,14 +15,13 @@ struct ByteArena: Sendable {
     /// Copies `raw[range]` and returns the offset it now lives at.
     mutating func append(_ range: Range<Int>, in raw: UnsafeRawBufferPointer) -> UInt32 {
         let offset = UInt32(bytes.count)
-        bytes.reserveCapacity(bytes.count + range.count)
-        for i in range { bytes.append(raw[i]) }
+        bytes.append(contentsOf: raw[range])
         return offset
     }
 
     mutating func append(_ newBytes: some Sequence<UInt8>) -> UInt32 {
         let offset = UInt32(bytes.count)
-        for b in newBytes { bytes.append(b) }
+        bytes.append(contentsOf: newBytes)
         return offset
     }
 }

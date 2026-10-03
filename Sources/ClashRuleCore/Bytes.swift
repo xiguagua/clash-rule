@@ -25,7 +25,5 @@ func fnv1a(_ bytes: UnsafeBufferPointer<UInt8>) -> UInt64 {
 }
 
 func fnv1a(_ bytes: [UInt8]) -> UInt64 {
-    var h: UInt64 = 0xcbf2_9ce4_8422_2325
-    for b in bytes { h = (h ^ UInt64(b)) &* 0x100000001b3 }
-    return h
+    bytes.withUnsafeBufferPointer { fnv1a($0) }
 }

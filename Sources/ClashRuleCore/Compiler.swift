@@ -25,9 +25,7 @@ struct RuleSink {
         guard !r.isEmpty else {
             throw RuleParseError(.invalidArgument, line: line, column: r.lowerBound - base + 1, "empty policy name")
         }
-        var key = [UInt8]()
-        key.reserveCapacity(r.count)
-        for i in r { key.append(raw[i]) }
+        let key = [UInt8](raw[r])
         if let id = policyKeys[key] { return id }
         guard policyRanges.count < 65536 else {
             throw RuleParseError(.policyTableFull, line: line, column: 1, "more than 65536 distinct policy names")
@@ -44,14 +42,9 @@ struct RuleSink {
     mutating func addExact(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
-        var key = [UInt8]()
-        key.reserveCapacity(r.count)
-        for i in r { key.append(lowerByte(raw[i])) }
-        if let old = exact[key] {
-            if ruleIndex < old.rule { exact[key] = (policyID, ruleIndex) }
-        } else {
-            exact[key] = (policyID, ruleIndex)
-        }
+        let key = lowerBytes(raw, r)
+        if let old = exact[key], old.rule <= ruleIndex { return }
+        exact[key] = (policyID, ruleIndex)
     }
 
     mutating func addSuffix(
@@ -70,9 +63,7 @@ struct RuleSink {
     mutating func addKeyword(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
-        var key = [UInt8]()
-        key.reserveCapacity(r.count)
-        for i in r { key.append(lowerByte(raw[i])) }
+        let key = lowerBytes(raw, r)
         keywords.append((key, policyID, ruleIndex))
     }
 
@@ -103,11 +94,8 @@ struct RuleSink {
     }
 
     mutating func addMatch(policyID: UInt16, ruleIndex: UInt32) {
-        if let current = matchRule {
-            if ruleIndex < current.rule { matchRule = (policyID, ruleIndex) }
-        } else {
-            matchRule = (policyID, ruleIndex)
-        }
+        if let current = matchRule, current.rule <= ruleIndex { return }
+        matchRule = (policyID, ruleIndex)
     }
 
     private func lowerBytes(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> [UInt8] {
@@ -132,8 +120,7 @@ final class SuffixTrieBuilder {
 
     func addSuffix(labels: [[UInt8]], policy: UInt16, rule: UInt32) {
         var node = root
-        for i in stride(from: labels.count - 1, through: 0, by: -1) {
-            let label = labels[i]
+        for label in labels.reversed() {
             if let next = node.children[label] {
                 node = next
             } else {
@@ -143,11 +130,8 @@ final class SuffixTrieBuilder {
                 node = child
             }
         }
-        if let current = node.terminal {
-            if rule < current.rule { node.terminal = (policy, rule) }
-        } else {
-            node.terminal = (policy, rule)
-        }
+        if let current = node.terminal, current.rule <= rule { return }
+        node.terminal = (policy, rule)
     }
 }
 

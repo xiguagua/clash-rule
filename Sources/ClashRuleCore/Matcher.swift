@@ -48,30 +48,29 @@ public struct Matcher: Sendable {
     ) -> MatchResult? {
         var bestRule = UInt32.max
         var bestPolicy: UInt16 = 0
-        func consider(_ policy: UInt16, _ rule: UInt32) {
-            if rule < bestRule {
-                bestRule = rule
-                bestPolicy = policy
-            }
+        func consider(_ hit: (policy: UInt16, rule: UInt32)?) {
+            guard let hit, hit.rule < bestRule else { return }
+            bestRule = hit.rule
+            bestPolicy = hit.policy
         }
 
         // MATCH baseline (always matches).
         if rules.hasMatchRule {
-            consider(rules.matchPolicy, rules.matchRuleIndex)
+            consider((rules.matchPolicy, rules.matchRuleIndex))
         }
 
         if domain.count > 0 {
-            if let hit = rules.lookupExactDomain(domain) { consider(hit.policy, hit.rule) }
-            if let hit = rules.lookupSuffix(domain) { consider(hit.policy, hit.rule) }
-            if let hit = rules.lookupKeyword(domain) { consider(hit.policy, hit.rule) }
+            consider(rules.lookupExactDomain(domain))
+            consider(rules.lookupSuffix(domain))
+            consider(rules.lookupKeyword(domain))
         }
 
-        if let address = targetAddress, let hit = rules.lookupAddress(address) {
-            consider(hit.policy, hit.rule)
+        if let address = targetAddress {
+            consider(rules.lookupAddress(address))
         }
 
-        if let hit = rules.lookupPort(targetPort, isDestination: true) { consider(hit.policy, hit.rule) }
-        if let hit = rules.lookupPort(sourcePort, isDestination: false) { consider(hit.policy, hit.rule) }
+        consider(rules.lookupPort(targetPort, isDestination: true))
+        consider(rules.lookupPort(sourcePort, isDestination: false))
 
         guard bestRule != UInt32.max else { return nil }
         return MatchResult(policyID: bestPolicy, ruleIndex: bestRule)
@@ -179,16 +178,11 @@ extension CompiledRules {
     }
 
     func lookupAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
-        var best: (policy: UInt16, rule: UInt32)? = nil
         // IPv4 is encoded in the low 32 bits. An all-zero high half is ambiguous,
         // so both tries are consulted and the lowest rule index wins.
-        if address >> 32 == 0 {
-            if let hit = walkAddress(ipv4Nodes, address: address, startBit: 31) { best = hit }
-            if let hit = walkAddress(ipv6Nodes, address: address, startBit: 127) {
-                if best == nil || hit.rule < best!.rule { best = hit }
-            }
-        } else {
-            if let hit = walkAddress(ipv6Nodes, address: address, startBit: 127) { best = hit }
+        var best = (address >> 32 == 0) ? walkAddress(ipv4Nodes, address: address, startBit: 31) : nil
+        if let hit = walkAddress(ipv6Nodes, address: address, startBit: 127) {
+            if best == nil || hit.rule < best!.rule { best = hit }
         }
         return best
     }

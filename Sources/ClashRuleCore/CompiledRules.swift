@@ -122,26 +122,21 @@ extension RuleSink {
         link(trie.root)
 
         // IP tries.
-        var ipv4Array = ContiguousArray<IPNode>()
-        ipv4Array.reserveCapacity(ipv4.nodes.count)
-        for build in ipv4.nodes {
-            ipv4Array.append(IPNode(
-                left: build.left == -1 ? IPNode.noChild : UInt32(build.left),
-                right: build.right == -1 ? IPNode.noChild : UInt32(build.right),
-                policyID: build.policy,
-                ruleIndex: build.rule
-            ))
+        func flattenIPNodes(_ builder: IPNodeBuilder) -> ContiguousArray<IPNode> {
+            var array = ContiguousArray<IPNode>()
+            array.reserveCapacity(builder.nodes.count)
+            for build in builder.nodes {
+                array.append(IPNode(
+                    left: build.left == -1 ? IPNode.noChild : UInt32(build.left),
+                    right: build.right == -1 ? IPNode.noChild : UInt32(build.right),
+                    policyID: build.policy,
+                    ruleIndex: build.rule
+                ))
+            }
+            return array
         }
-        var ipv6Array = ContiguousArray<IPNode>()
-        ipv6Array.reserveCapacity(ipv6.nodes.count)
-        for build in ipv6.nodes {
-            ipv6Array.append(IPNode(
-                left: build.left == -1 ? IPNode.noChild : UInt32(build.left),
-                right: build.right == -1 ? IPNode.noChild : UInt32(build.right),
-                policyID: build.policy,
-                ruleIndex: build.rule
-            ))
-        }
+        let ipv4Array = flattenIPNodes(ipv4)
+        let ipv6Array = flattenIPNodes(ipv6)
 
         // Ports.
         var portArray = ContiguousArray(portMap.values.map { entry in
