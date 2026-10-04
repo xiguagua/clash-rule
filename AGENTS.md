@@ -4,7 +4,8 @@ Swift implementation of a Clash rule engine. Source of truth: `docs/PLAN.md`.
 
 ## Commands & Status
 
-- **Status**: See `docs/PLAN.md` header for current milestone.
+- **Status**: See `docs/PLAN.md` § Current State for current milestone.
+- **Toolchain**: Swift 6.4+ (`swift-tools-version:6.4`, `.swiftLanguageMode(.v6)`); platforms macOS 15 / iOS 18 / tvOS 18 / watchOS 11 / visionOS 2.
 - **Test**: `swift test` (required before every commit).
 
 ## Hard Constraints
