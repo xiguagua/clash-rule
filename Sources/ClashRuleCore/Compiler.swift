@@ -27,6 +27,12 @@ struct RuleSink {
     var geoIPMap: [UInt32: (policy: UInt16, rule: UInt32)] = [:]
     var matchRule: (policy: UInt16, rule: UInt32)?
 
+    // Logic rules (AND / OR / NOT / SUB-RULE)
+    var logicRules: [LogicRule] = []
+    var logicArena = ByteArena()
+    var logicNodes: [LogicNode] = []
+    var logicChildIndices: [UInt32] = []
+
     mutating func intern(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
     ) throws(RuleParseError) -> UInt16 {
@@ -155,6 +161,34 @@ struct RuleSink {
     mutating func addMatch(policyID: UInt16, ruleIndex: UInt32) {
         if let current = matchRule, current.rule <= ruleIndex { return }
         matchRule = (policyID, ruleIndex)
+    }
+
+    mutating func addLogicString(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> (offset: UInt32, length: UInt16) {
+        var lower = [UInt8]()
+        lower.reserveCapacity(r.count)
+        for i in r { lower.append(lowerByte(raw[i])) }
+        let offset = logicArena.append(lower)
+        return (offset, UInt16(r.count))
+    }
+
+    mutating func addLogicNode(_ node: LogicNode) -> UInt32 {
+        let index = UInt32(logicNodes.count)
+        logicNodes.append(node)
+        return index
+    }
+
+    mutating func addLogicChildIndices(_ indices: [UInt32]) -> UInt32 {
+        let start = UInt32(logicChildIndices.count)
+        logicChildIndices.append(contentsOf: indices)
+        return start
+    }
+
+    mutating func addLogicRule(rootNodeIndex: UInt32, policyID: UInt16, ruleIndex: UInt32) {
+        logicRules.append(LogicRule(
+            rootNodeIndex: rootNodeIndex,
+            policyID: policyID,
+            ruleIndex: ruleIndex
+        ))
     }
 
     private func lowerBytes(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> [UInt8] {

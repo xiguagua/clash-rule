@@ -27,6 +27,10 @@ struct RuleParser {
         add("NETWORK", .network)
         add("DSCP", .dscp)
         add("GEOIP", .geoIP)
+        add("AND", .and)
+        add("OR", .or)
+        add("NOT", .not)
+        add("SUB-RULE", .subRule)
         add("MATCH", .match)
         return table
     }()
@@ -63,17 +67,24 @@ struct RuleParser {
         if start == stop { return }
         if raw[start] == UInt8(ascii: "#") { return }
 
-        // Split into comma segments, trimming whitespace around each one.
+        // Split into comma segments, trimming whitespace around each one, respecting parentheses.
         var segments: [Range<Int>] = []
         var cursor = start
-        while true {
+        var depth = 0
+        while cursor < stop {
             var comma = cursor
-            while comma < stop && raw[comma] != UInt8(ascii: ",") { comma += 1 }
+            while comma < stop {
+                let b = raw[comma]
+                if b == UInt8(ascii: "(") { depth += 1 }
+                else if b == UInt8(ascii: ")") && depth > 0 { depth -= 1 }
+                else if b == UInt8(ascii: ",") && depth == 0 { break }
+                comma += 1
+            }
             var s = cursor, e = comma
             while s < e && isInlineSpace(raw[s]) { s += 1 }
             while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
             segments.append(s..<e)
-            if comma == stop { break }
+            if comma >= stop { break }
             cursor = comma + 1
         }
 
@@ -158,6 +169,18 @@ struct RuleParser {
         case .geoIP:
             let code = try parseGeoIP(raw, arg, line: line, base: base)
             sink.addGeoIP(code, policyID: policyID, ruleIndex: ruleIndex)
+        case .and:
+            let root = try parseAndOrCondition(raw, arg, isAnd: true, line: line, base: base, into: &sink)
+            sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+        case .or:
+            let root = try parseAndOrCondition(raw, arg, isAnd: false, line: line, base: base, into: &sink)
+            sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+        case .not:
+            let root = try parseNotCondition(raw, arg, line: line, base: base, into: &sink)
+            sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+        case .subRule:
+            let root = try parseSubRuleCondition(raw, arg, line: line, base: base, into: &sink)
+            sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
         case .match:
             break // handled above
         }
@@ -483,5 +506,225 @@ struct RuleParser {
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
     ) throws(RuleParseError) -> UInt32 {
         try parseDecimal(raw, r, max: 65535, what: "port", errorCode: .invalidPort, line: line, base: base)
+    }
+
+    // MARK: - Logic rules parsing
+
+    private static func parseAndOrCondition(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, isAnd: Bool, line: Int, base: Int, into sink: inout RuleSink
+    ) throws(RuleParseError) -> UInt32 {
+        var s = r.lowerBound
+        var e = r.upperBound
+        while s < e && isInlineSpace(raw[s]) { s += 1 }
+        while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+        guard e - s >= 2, raw[s] == UInt8(ascii: "("), raw[e - 1] == UInt8(ascii: ")") else {
+            throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (condition-list)")
+        }
+        let inner = (s + 1)..<(e - 1)
+        let childRanges = try splitCommaRanges(raw, inner, line: line, base: base)
+        guard childRanges.count >= 2 else {
+            throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "\(isAnd ? "AND" : "OR") requires at least 2 conditions")
+        }
+        var childIndices: [UInt32] = []
+        childIndices.reserveCapacity(childRanges.count)
+        for cr in childRanges {
+            let childNode = try parseCondition(raw, cr, line: line, base: base, into: &sink)
+            childIndices.append(childNode)
+        }
+        let firstIndex = sink.addLogicChildIndices(childIndices)
+        return sink.addLogicNode(LogicNode(
+            op: isAnd ? LogicOp.and.rawValue : LogicOp.or.rawValue,
+            childCount: UInt16(childIndices.count),
+            firstChildIndex: firstIndex
+        ))
+    }
+
+    private static func parseNotCondition(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int, into sink: inout RuleSink
+    ) throws(RuleParseError) -> UInt32 {
+        var s = r.lowerBound
+        var e = r.upperBound
+        while s < e && isInlineSpace(raw[s]) { s += 1 }
+        while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+        guard e - s >= 2, raw[s] == UInt8(ascii: "("), raw[e - 1] == UInt8(ascii: ")") else {
+            throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (condition)")
+        }
+        let inner = (s + 1)..<(e - 1)
+        let childRanges = try splitCommaRanges(raw, inner, line: line, base: base)
+        guard childRanges.count == 1 else {
+            throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "NOT requires exactly 1 condition")
+        }
+        let childNode = try parseCondition(raw, childRanges[0], line: line, base: base, into: &sink)
+        return sink.addLogicNode(LogicNode(
+            op: LogicOp.not.rawValue,
+            childCount: 1,
+            firstChildIndex: childNode
+        ))
+    }
+
+    private static func parseSubRuleCondition(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int, into sink: inout RuleSink
+    ) throws(RuleParseError) -> UInt32 {
+        var s = r.lowerBound
+        var e = r.upperBound
+        while s < e && isInlineSpace(raw[s]) { s += 1 }
+        while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+        if e - s >= 2 && raw[s] == UInt8(ascii: "(") && raw[e - 1] == UInt8(ascii: ")") {
+            return try parseCondition(raw, (s + 1)..<(e - 1), line: line, base: base, into: &sink)
+        }
+        return try parseCondition(raw, s..<e, line: line, base: base, into: &sink)
+    }
+
+    private static func parseCondition(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int, into sink: inout RuleSink
+    ) throws(RuleParseError) -> UInt32 {
+        var s = r.lowerBound
+        var e = r.upperBound
+        while s < e && isInlineSpace(raw[s]) { s += 1 }
+        while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+        if e - s >= 2 && raw[s] == UInt8(ascii: "(") && raw[e - 1] == UInt8(ascii: ")") {
+            s += 1
+            e -= 1
+            while s < e && isInlineSpace(raw[s]) { s += 1 }
+            while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+        }
+        guard s < e else {
+            throw RuleParseError(.invalidArgument, line: line, column: s - base + 1, "empty condition")
+        }
+
+        let parts = try splitCommaRanges(raw, s..<e, line: line, base: base)
+        guard parts.count >= 2 else {
+            throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (TYPE,ARG) condition")
+        }
+
+        var typeName = [UInt8]()
+        typeName.reserveCapacity(parts[0].count)
+        for i in parts[0] { typeName.append(upperByte(raw[i])) }
+        guard let kind = kindTable[typeName] else {
+            throw RuleParseError(
+                .unknownRuleType, line: line, column: parts[0].lowerBound - base + 1,
+                "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))' in condition"
+            )
+        }
+
+        let arg = parts[1]
+        switch kind {
+        case .and:
+            return try parseAndOrCondition(raw, arg, isAnd: true, line: line, base: base, into: &sink)
+        case .or:
+            return try parseAndOrCondition(raw, arg, isAnd: false, line: line, base: base, into: &sink)
+        case .not:
+            return try parseNotCondition(raw, arg, line: line, base: base, into: &sink)
+        case .domain:
+            try validateDomain(raw, arg, line: line, base: base)
+            let (off, len) = sink.addLogicString(raw, arg)
+            return sink.addLogicNode(LogicNode(op: LogicOp.domain.rawValue, argOffset: off, argLength: len))
+        case .domainSuffix:
+            try validateDomain(raw, arg, line: line, base: base)
+            let (off, len) = sink.addLogicString(raw, arg)
+            return sink.addLogicNode(LogicNode(op: LogicOp.domainSuffix.rawValue, argOffset: off, argLength: len))
+        case .domainKeyword:
+            try validateKeyword(raw, arg, line: line, base: base)
+            let (off, len) = sink.addLogicString(raw, arg)
+            return sink.addLogicNode(LogicNode(op: LogicOp.domainKeyword.rawValue, argOffset: off, argLength: len))
+        case .ipCIDR:
+            let parsed = try parseCIDR(raw, arg, line: line, base: base)
+            return sink.addLogicNode(LogicNode(
+                op: LogicOp.ipCIDR.rawValue,
+                flags: parsed.isIPv6 ? 1 : 0,
+                addressLow: UInt64(parsed.address & 0xFFFF_FFFF_FFFF_FFFF),
+                addressHigh: UInt64(parsed.address >> 64),
+                prefix: parsed.prefix
+            ))
+        case .srcIPCIDR:
+            let parsed = try parseCIDR(raw, arg, line: line, base: base)
+            return sink.addLogicNode(LogicNode(
+                op: LogicOp.ipCIDR.rawValue,
+                flags: (parsed.isIPv6 ? 1 : 0) | 2,
+                addressLow: UInt64(parsed.address & 0xFFFF_FFFF_FFFF_FFFF),
+                addressHigh: UInt64(parsed.address >> 64),
+                prefix: parsed.prefix
+            ))
+        case .port(let side):
+            let intervals = try parsePortList(raw, arg, line: line, base: base)
+            let flag: UInt8 = (side == .destination) ? 1 : (side == .source ? 2 : 0)
+            if intervals.count == 1 {
+                return sink.addLogicNode(LogicNode(
+                    op: LogicOp.port.rawValue,
+                    flags: flag,
+                    argLength: intervals[0].high,
+                    portLow: intervals[0].low
+                ))
+            } else {
+                var childNodes: [UInt32] = []
+                for interval in intervals {
+                    let n = sink.addLogicNode(LogicNode(
+                        op: LogicOp.port.rawValue,
+                        flags: flag,
+                        argLength: interval.high,
+                        portLow: interval.low
+                    ))
+                    childNodes.append(n)
+                }
+                let firstIndex = sink.addLogicChildIndices(childNodes)
+                return sink.addLogicNode(LogicNode(
+                    op: LogicOp.or.rawValue,
+                    childCount: UInt16(childNodes.count),
+                    firstChildIndex: firstIndex
+                ))
+            }
+        case .processName:
+            try validatePrintable(raw, arg, line: line, base: base, name: "process name")
+            let (off, len) = sink.addLogicString(raw, arg)
+            return sink.addLogicNode(LogicNode(op: LogicOp.processName.rawValue, argOffset: off, argLength: len))
+        case .processPath:
+            try validatePrintable(raw, arg, line: line, base: base, name: "process path")
+            let (off, len) = sink.addLogicString(raw, arg)
+            return sink.addLogicNode(LogicNode(op: LogicOp.processPath.rawValue, argOffset: off, argLength: len))
+        case .network:
+            let proto = try parseNetwork(raw, arg, line: line, base: base)
+            return sink.addLogicNode(LogicNode(op: LogicOp.network.rawValue, networkProto: proto.rawValue))
+        case .dscp:
+            let val = try parseDSCP(raw, arg, line: line, base: base)
+            return sink.addLogicNode(LogicNode(op: LogicOp.dscp.rawValue, portLow: UInt16(val)))
+        case .geoIP:
+            let code = try parseGeoIP(raw, arg, line: line, base: base)
+            return sink.addLogicNode(LogicNode(op: LogicOp.geoIP.rawValue, countryCode: code))
+        case .subRule, .match:
+            throw RuleParseError(.malformedLine, line: line, column: parts[0].lowerBound - base + 1, "cannot nest \(String(decoding: typeName, as: UTF8.self)) inside condition")
+        }
+    }
+
+    private static func splitCommaRanges(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
+    ) throws(RuleParseError) -> [Range<Int>] {
+        var segments: [Range<Int>] = []
+        var cursor = r.lowerBound
+        var depth = 0
+        while cursor < r.upperBound {
+            var comma = cursor
+            while comma < r.upperBound {
+                let b = raw[comma]
+                if b == UInt8(ascii: "(") { depth += 1 }
+                else if b == UInt8(ascii: ")") {
+                    guard depth > 0 else {
+                        throw RuleParseError(.malformedLine, line: line, column: comma - base + 1, "unmatched ')'")
+                    }
+                    depth -= 1
+                }
+                else if b == UInt8(ascii: ",") && depth == 0 { break }
+                comma += 1
+            }
+            guard depth == 0 else {
+                throw RuleParseError(.malformedLine, line: line, column: cursor - base + 1, "unclosed '('")
+            }
+            var s = cursor, e = comma
+            while s < e && isInlineSpace(raw[s]) { s += 1 }
+            while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+            segments.append(s..<e)
+            if comma >= r.upperBound { break }
+            cursor = comma + 1
+        }
+        return segments
     }
 }

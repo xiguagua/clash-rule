@@ -11,6 +11,10 @@ public enum RuleKind: Sendable, Equatable {
     case network
     case dscp
     case geoIP
+    case and
+    case or
+    case not
+    case subRule
     case match
 }
 

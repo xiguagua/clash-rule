@@ -95,6 +95,15 @@ public struct Matcher: Sendable {
             collector.consider(rules.lookupGeoIP(context.countryCode))
         }
 
+        if !rules.logicRules.isEmpty {
+            for logicRule in rules.logicRules {
+                guard logicRule.ruleIndex < collector.bestRule else { break }
+                if rules.evalLogicNode(Int(logicRule.rootNodeIndex), context: context) {
+                    collector.consider(policy: logicRule.policyID, rule: logicRule.ruleIndex)
+                }
+            }
+        }
+
         return collector.finish()
     }
 
@@ -398,5 +407,132 @@ extension CompiledRules {
             i -= 1
         }
         return best
+    }
+
+    func evalLogicNode(_ nodeIndex: Int, context: MatchContext) -> Bool {
+        guard nodeIndex < logicNodes.count else { return false }
+        let node = logicNodes[nodeIndex]
+        guard let op = LogicOp(rawValue: node.op) else { return false }
+
+        switch op {
+        case .and:
+            let start = Int(node.firstChildIndex)
+            for i in 0..<Int(node.childCount) {
+                let child = Int(logicChildIndices[start + i])
+                if !evalLogicNode(child, context: context) {
+                    return false
+                }
+            }
+            return true
+
+        case .or:
+            let start = Int(node.firstChildIndex)
+            for i in 0..<Int(node.childCount) {
+                let child = Int(logicChildIndices[start + i])
+                if evalLogicNode(child, context: context) {
+                    return true
+                }
+            }
+            return false
+
+        case .not:
+            let child = Int(node.firstChildIndex)
+            return !evalLogicNode(child, context: context)
+
+        case .domain:
+            guard context.domain.count == Int(node.argLength) else { return false }
+            let start = Int(node.argOffset)
+            let len = Int(node.argLength)
+            for k in 0..<len where lowerByte(context.domain[k]) != logicArena[start + k] {
+                return false
+            }
+            return true
+
+        case .domainSuffix:
+            let len = Int(node.argLength)
+            guard context.domain.count >= len else { return false }
+            let start = Int(node.argOffset)
+            let domainOffset = context.domain.count - len
+            if domainOffset > 0 && context.domain[domainOffset - 1] != UInt8(ascii: ".") {
+                return false
+            }
+            for k in 0..<len where lowerByte(context.domain[domainOffset + k]) != logicArena[start + k] {
+                return false
+            }
+            return true
+
+        case .domainKeyword:
+            let len = Int(node.argLength)
+            guard context.domain.count >= len else { return false }
+            let start = Int(node.argOffset)
+            var i = 0
+            while i <= context.domain.count - len {
+                var k = 0
+                while k < len && lowerByte(context.domain[i + k]) == logicArena[start + k] { k += 1 }
+                if k == len { return true }
+                i += 1
+            }
+            return false
+
+        case .ipCIDR:
+            let isSource = (node.flags & 2) != 0
+            guard let addr = isSource ? context.sourceAddress : context.targetAddress else { return false }
+            let prefix = Int(node.prefix)
+            let isIPv6 = (node.flags & 1) != 0
+            if isIPv6 {
+                let nodeAddr = (UInt128(node.addressHigh) << 64) | UInt128(node.addressLow)
+                let shift = 128 - prefix
+                let mask = (prefix == 0) ? UInt128(0) : (~UInt128(0) << shift)
+                return (addr & mask) == (nodeAddr & mask)
+            } else {
+                let nodeAddr32 = UInt32(node.addressLow)
+                let addr32 = UInt32(addr & 0xFFFF_FFFF)
+                let shift = 32 - prefix
+                let mask = (prefix == 0) ? UInt32(0) : (~UInt32(0) << shift)
+                return (addr32 & mask) == (nodeAddr32 & mask)
+            }
+
+        case .port:
+            let portSide = node.flags
+            let lo = node.portLow
+            let hi = node.argLength
+            if portSide == 1 {
+                return context.targetPort >= lo && context.targetPort <= hi
+            } else if portSide == 2 {
+                return context.sourcePort >= lo && context.sourcePort <= hi
+            } else {
+                return (context.targetPort >= lo && context.targetPort <= hi) ||
+                       (context.sourcePort >= lo && context.sourcePort <= hi)
+            }
+
+        case .processName:
+            guard context.processName.count == Int(node.argLength) else { return false }
+            let start = Int(node.argOffset)
+            let len = Int(node.argLength)
+            for k in 0..<len where lowerByte(context.processName[k]) != logicArena[start + k] {
+                return false
+            }
+            return true
+
+        case .processPath:
+            guard context.processPath.count == Int(node.argLength) else { return false }
+            let start = Int(node.argOffset)
+            let len = Int(node.argLength)
+            for k in 0..<len where lowerByte(context.processPath[k]) != logicArena[start + k] {
+                return false
+            }
+            return true
+
+        case .network:
+            guard let net = context.network else { return false }
+            return net.rawValue == node.networkProto
+
+        case .dscp:
+            guard let d = context.dscp else { return false }
+            return d == UInt8(node.portLow)
+
+        case .geoIP:
+            return context.countryCode != 0 && context.countryCode == node.countryCode
+        }
     }
 }

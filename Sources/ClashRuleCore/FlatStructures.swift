@@ -78,3 +78,45 @@ struct DscpEntry: BitwiseCopyable, Sendable {
 
     static let noRule = UInt32.max
 }
+
+/// Opcode for nodes in the flat logic expression tree.
+public enum LogicOp: UInt8, BitwiseCopyable, Sendable {
+    case and = 1
+    case or = 2
+    case not = 3
+    case domain = 4
+    case domainSuffix = 5
+    case domainKeyword = 6
+    case ipCIDR = 7
+    case port = 8
+    case processName = 9
+    case processPath = 10
+    case network = 11
+    case dscp = 12
+    case geoIP = 13
+}
+
+/// Flat POD node in the logic expression tree.
+struct LogicNode: BitwiseCopyable, Sendable {
+    var op: UInt8 = 0
+    var flags: UInt8 = 0            // bit 0: isIPv6, bit 1: isSource, bits 2..3: portSide (0=either, 1=dst, 2=src)
+    var childCount: UInt16 = 0      // number of children for AND/OR
+    var firstChildIndex: UInt32 = 0 // start index in logicChildIndices (AND/OR) or child node index (NOT)
+    var argOffset: UInt32 = 0       // offset in logicArena (for strings)
+    var argLength: UInt16 = 0       // string length or high port
+    var portLow: UInt16 = 0         // low port or dscp
+    var addressLow: UInt64 = 0      // low 64 bits of IP address
+    var addressHigh: UInt64 = 0     // high 64 bits of IP address
+    var prefix: UInt8 = 0           // CIDR prefix length
+    var networkProto: UInt8 = 0     // 1=tcp, 2=udp
+    var _padding: UInt16 = 0
+    var countryCode: UInt32 = 0     // packed country code
+}
+
+/// Compiled logic rule (AND / OR / NOT / SUB-RULE).
+struct LogicRule: BitwiseCopyable, Sendable {
+    var rootNodeIndex: UInt32 = 0
+    var policyID: UInt16 = 0
+    var _padding: UInt16 = 0
+    var ruleIndex: UInt32 = 0
+}

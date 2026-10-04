@@ -534,6 +534,152 @@ private func matchDomain(
         #expect(resGeo?.ruleIndex == 2)
         #expect(rules.policyName(resGeo!.policyID) == "GeoRule")
     }
+
+    @Test func andRule() throws {
+        let text = """
+            AND,((DOMAIN-SUFFIX,google.com),(DST-PORT,443)),GoogleSSL
+            AND,((IP-CIDR,10.0.0.0/8),(NETWORK,tcp)),InternalTCP
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let d1 = Array("mail.google.com".utf8)
+        d1.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, targetPort: 443)
+            #expect(rules.policyName(res!.policyID) == "GoogleSSL")
+
+            let res80 = matcher.match(domain: buf, targetPort: 80)
+            #expect(rules.policyName(res80!.policyID) == "Fallback")
+        }
+
+        let resTCP = matcher.match(targetAddress: v4(0x0A01_0203), network: .tcp)
+        #expect(rules.policyName(resTCP!.policyID) == "InternalTCP")
+
+        let resUDP = matcher.match(targetAddress: v4(0x0A01_0203), network: .udp)
+        #expect(rules.policyName(resUDP!.policyID) == "Fallback")
+    }
+
+    @Test func orRule() throws {
+        let text = """
+            OR,((DOMAIN,apple.com),(DOMAIN,icloud.com)),AppleDirect
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let apple = Array("apple.com".utf8)
+        let icloud = Array("icloud.com".utf8)
+        let other = Array("google.com".utf8)
+
+        apple.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf)
+            #expect(rules.policyName(res!.policyID) == "AppleDirect")
+        }
+        icloud.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf)
+            #expect(rules.policyName(res!.policyID) == "AppleDirect")
+        }
+        other.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf)
+            #expect(rules.policyName(res!.policyID) == "Fallback")
+        }
+    }
+
+    @Test func notRule() throws {
+        let text = """
+            NOT,((NETWORK,udp)),NotUDP
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let resTCP = matcher.match(network: .tcp)
+        #expect(rules.policyName(resTCP!.policyID) == "NotUDP")
+
+        let resUDP = matcher.match(network: .udp)
+        #expect(rules.policyName(resUDP!.policyID) == "Fallback")
+    }
+
+    @Test func subRule() throws {
+        let text = """
+            SUB-RULE,(NETWORK,tcp),SubGroupTCP
+            SUB-RULE,(AND,((DOMAIN-SUFFIX,corp.internal),(PORT,8080))),SubGroupCorp
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let res1 = matcher.match(network: .tcp)
+        #expect(rules.policyName(res1!.policyID) == "SubGroupTCP")
+
+        let corp = Array("api.corp.internal".utf8)
+        corp.withUnsafeBufferPointer { buf in
+            let resCorp = matcher.match(domain: buf, targetPort: 8080, network: .udp)
+            #expect(rules.policyName(resCorp!.policyID) == "SubGroupCorp")
+        }
+    }
+
+    @Test func nestedLogicRules() throws {
+        let text = """
+            AND,((OR,((DOMAIN,a.com),(DOMAIN,b.com))),(NOT,((NETWORK,udp)))),ComplexPolicy
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let a = Array("a.com".utf8)
+        let b = Array("b.com".utf8)
+        let c = Array("c.com".utf8)
+
+        a.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, network: .tcp)
+            #expect(rules.policyName(res!.policyID) == "ComplexPolicy")
+        }
+        b.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, network: .tcp)
+            #expect(rules.policyName(res!.policyID) == "ComplexPolicy")
+        }
+        a.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, network: .udp)
+            #expect(rules.policyName(res!.policyID) == "Fallback")
+        }
+        c.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, network: .tcp)
+            #expect(rules.policyName(res!.policyID) == "Fallback")
+        }
+    }
+
+    @Test func logicRuleFileOrderArbitration() throws {
+        let text = """
+            # Rule 0
+            DOMAIN,priority.com,DirectRule
+            # Rule 1
+            AND,((DOMAIN-SUFFIX,com),(PORT,443)),LogicRule
+            # Rule 2
+            DOMAIN-SUFFIX,com,SuffixRule
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let prio = Array("priority.com".utf8)
+        prio.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, targetPort: 443)
+            #expect(res?.ruleIndex == 0)
+            #expect(rules.policyName(res!.policyID) == "DirectRule")
+        }
+
+        let other = Array("other.com".utf8)
+        other.withUnsafeBufferPointer { buf in
+            let res = matcher.match(domain: buf, targetPort: 443)
+            #expect(res?.ruleIndex == 1)
+            #expect(rules.policyName(res!.policyID) == "LogicRule")
+
+            let res80 = matcher.match(domain: buf, targetPort: 80)
+            #expect(res80?.ruleIndex == 2)
+            #expect(rules.policyName(res80!.policyID) == "SuffixRule")
+        }
+    }
 }
 
 // MARK: - Parser errors
@@ -627,5 +773,13 @@ private func matchDomain(
         expectError("GEOIP,C,DIRECT\n", .invalidArgument, line: 1)
         expectError("GEOIP,TOOLONG,DIRECT\n", .invalidArgument, line: 1)
         expectError("GEOIP,12,DIRECT\n", .invalidArgument, line: 1)
+    }
+
+    @Test func invalidLogicRules() {
+        expectError("AND,((DOMAIN,a.com)),DIRECT\n", .malformedLine, line: 1)
+        expectError("OR,((DOMAIN,a.com)),DIRECT\n", .malformedLine, line: 1)
+        expectError("NOT,((DOMAIN,a.com),(PORT,80)),DIRECT\n", .malformedLine, line: 1)
+        expectError("AND,((DOMAIN,a.com),(INVALID-TYPE,x)),DIRECT\n", .unknownRuleType, line: 1)
+        expectError("AND,((DOMAIN,a.com),(PORT,80)\n", .malformedLine, line: 1)
     }
 }

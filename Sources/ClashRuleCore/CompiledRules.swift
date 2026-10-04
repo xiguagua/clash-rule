@@ -50,6 +50,12 @@ public struct CompiledRules: Sendable {
     // GeoIP (sorted by countryCode)
     var geoIPEntries: ContiguousArray<GeoIPEntry>
 
+    // Logic rules (AND / OR / NOT / SUB-RULE)
+    var logicRules: ContiguousArray<LogicRule>
+    var logicNodes: ContiguousArray<LogicNode>
+    var logicChildIndices: ContiguousArray<UInt32>
+    var logicArena: ContiguousArray<UInt8>
+
     // MATCH fallback
     var matchPolicy: UInt16
     var matchRuleIndex: UInt32
@@ -217,6 +223,13 @@ extension RuleSink {
         }
         geoIPArray.sort { $0.countryCode < $1.countryCode }
 
+        // Logic rules (sorted by ruleIndex for early-prune arbitration).
+        var sortedLogicRules = ContiguousArray(logicRules)
+        sortedLogicRules.sort { $0.ruleIndex < $1.ruleIndex }
+        let logicNodeArray = ContiguousArray(logicNodes)
+        let logicChildArray = ContiguousArray(logicChildIndices)
+        let logicArenaBytes = logicArena.bytes
+
         return CompiledRules(
             policyRangesArr: policyRangeArray,
             policyArena: policyArenaBytes,
@@ -246,6 +259,10 @@ extension RuleSink {
             udpRuleIndex: udpRule?.rule ?? UInt32.max,
             dscpTable: dscpArray,
             geoIPEntries: geoIPArray,
+            logicRules: sortedLogicRules,
+            logicNodes: logicNodeArray,
+            logicChildIndices: logicChildArray,
+            logicArena: logicArenaBytes,
             matchPolicy: matchRule?.policy ?? 0,
             matchRuleIndex: matchRule?.rule ?? 0,
             hasMatchRule: matchRule != nil,
