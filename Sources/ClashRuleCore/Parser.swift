@@ -31,11 +31,18 @@ struct RuleParser {
         add("OR", .or)
         add("NOT", .not)
         add("SUB-RULE", .subRule)
+        add("RULE-SET", .ruleSet)
         add("MATCH", .match)
         return table
     }()
 
-    static func parse(_ input: UnsafeRawBufferPointer, into sink: inout RuleSink) throws(RuleParseError) {
+    static func parse(
+        _ input: UnsafeRawBufferPointer,
+        ruleSetResolver: ((UnsafeBufferPointer<UInt8>) -> UnsafeRawBufferPointer?)? = nil,
+        byteRuleSets: [[UInt8]: [UInt8]]? = nil,
+        into sink: inout RuleSink
+    ) throws(RuleParseError) {
+        var activeRuleSets: Set<[UInt8]> = []
         let n = input.count
         var i = 0
         var line = 1
@@ -44,7 +51,14 @@ struct RuleParser {
             while j < n && input[j] != UInt8(ascii: "\n") { j += 1 }
             var length = j - i
             if length > 0 && input[i + length - 1] == UInt8(ascii: "\r") { length -= 1 }
-            try parseLine(input, i..<(i + length), line: line, into: &sink)
+            try parseLine(
+                input, i..<(i + length),
+                line: line,
+                ruleSetResolver: ruleSetResolver,
+                byteRuleSets: byteRuleSets,
+                activeRuleSets: &activeRuleSets,
+                into: &sink
+            )
             line += 1
             if j >= n { break }
             i = j + 1
@@ -57,6 +71,9 @@ struct RuleParser {
         _ raw: UnsafeRawBufferPointer,
         _ range: Range<Int>,
         line: Int,
+        ruleSetResolver: ((UnsafeBufferPointer<UInt8>) -> UnsafeRawBufferPointer?)?,
+        byteRuleSets: [[UInt8]: [UInt8]]?,
+        activeRuleSets: inout Set<[UInt8]>,
         into sink: inout RuleSink
     ) throws(RuleParseError) {
         let base = range.lowerBound
@@ -115,22 +132,24 @@ struct RuleParser {
         let arg = segments[1]
         let ruleIndex = sink.nextRuleIndex
 
-        // Flags: only `no-resolve` is accepted, and only on IP-CIDR/GEOIP rules.
+        // Flags: only `no-resolve` is accepted, and only on IP-CIDR/GEOIP/RULE-SET rules.
         var allowNoResolve = false
         switch kind {
-        case .ipCIDR, .srcIPCIDR, .geoIP:
+        case .ipCIDR, .srcIPCIDR, .geoIP, .ruleSet:
             allowNoResolve = true
         default:
             break
         }
+        var hasNoResolve = false
         for flagRange in segments[3...] {
             if flagRange.isEmpty { continue }
             guard allowNoResolve, isNoResolve(raw, flagRange) else {
                 throw RuleParseError(
                     .unknownFlag, line: line, column: flagRange.lowerBound - base + 1,
-                    "unsupported flag (only 'no-resolve' on IP-CIDR/GEOIP is accepted)"
+                    "unsupported flag (only 'no-resolve' on IP-CIDR/GEOIP/RULE-SET is accepted)"
                 )
             }
+            hasNoResolve = true
         }
 
         let policyID = try sink.intern(raw, segments[2], line: line, base: base)
@@ -181,10 +200,319 @@ struct RuleParser {
         case .subRule:
             let root = try parseSubRuleCondition(raw, arg, line: line, base: base, into: &sink)
             sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+        case .ruleSet:
+            let nameBytes = [UInt8](raw[arg])
+            guard !activeRuleSets.contains(nameBytes) else {
+                throw RuleParseError(.circularRuleSet, line: line, column: arg.lowerBound - base + 1, "circular reference to rule-set '\(String(decoding: nameBytes, as: UTF8.self))'")
+            }
+            if let byteMap = byteRuleSets, let data = byteMap[nameBytes] {
+                activeRuleSets.insert(nameBytes)
+                defer { activeRuleSets.remove(nameBytes) }
+                try withBytes(data, line: line) { ruleSetBytes in
+                    try parseRuleSetPayload(
+                        ruleSetBytes,
+                        policyID: policyID,
+                        ruleIndex: ruleIndex,
+                        inheritedNoResolve: hasNoResolve,
+                        ruleSetResolver: ruleSetResolver,
+                        byteRuleSets: byteRuleSets,
+                        activeRuleSets: &activeRuleSets,
+                        into: &sink
+                    )
+                }
+            } else if let resolver = ruleSetResolver {
+                let resolved: UnsafeRawBufferPointer? = nameBytes.withUnsafeBufferPointer { nameBuf in
+                    resolver(nameBuf)
+                }
+                guard let ruleSetBytes = resolved else {
+                    throw RuleParseError(.unknownRuleSet, line: line, column: arg.lowerBound - base + 1, "rule-set '\(String(decoding: nameBytes, as: UTF8.self))' not found")
+                }
+                activeRuleSets.insert(nameBytes)
+                defer { activeRuleSets.remove(nameBytes) }
+                try parseRuleSetPayload(
+                    ruleSetBytes,
+                    policyID: policyID,
+                    ruleIndex: ruleIndex,
+                    inheritedNoResolve: hasNoResolve,
+                    ruleSetResolver: ruleSetResolver,
+                    byteRuleSets: byteRuleSets,
+                    activeRuleSets: &activeRuleSets,
+                    into: &sink
+                )
+            } else {
+                throw RuleParseError(.unknownRuleSet, line: line, column: arg.lowerBound - base + 1, "rule-set '\(String(decoding: nameBytes, as: UTF8.self))' not found")
+            }
         case .match:
             break // handled above
         }
         sink.commitLine()
+    }
+
+    // MARK: - Rule-set payload parsing
+
+    private static func withBytes<R>(
+        _ data: [UInt8],
+        line: Int,
+        _ body: (UnsafeRawBufferPointer) throws -> R
+    ) throws(RuleParseError) -> R {
+        do {
+            return try data.withUnsafeBytes { raw in
+                try body(raw)
+            }
+        } catch let err as RuleParseError {
+            throw err
+        } catch {
+            throw RuleParseError(.malformedLine, line: line, column: 1, "\(error)")
+        }
+    }
+
+    private static func parseRuleSetPayload(
+        _ input: UnsafeRawBufferPointer,
+        policyID: UInt16,
+        ruleIndex: UInt32,
+        inheritedNoResolve: Bool,
+        ruleSetResolver: ((UnsafeBufferPointer<UInt8>) -> UnsafeRawBufferPointer?)?,
+        byteRuleSets: [[UInt8]: [UInt8]]?,
+        activeRuleSets: inout Set<[UInt8]>,
+        into sink: inout RuleSink
+    ) throws(RuleParseError) {
+        let n = input.count
+        var i = 0
+        var line = 1
+        while true {
+            var j = i
+            while j < n && input[j] != UInt8(ascii: "\n") { j += 1 }
+            var length = j - i
+            if length > 0 && input[i + length - 1] == UInt8(ascii: "\r") { length -= 1 }
+            try parseRuleSetLine(
+                input, i..<(i + length),
+                line: line,
+                policyID: policyID,
+                ruleIndex: ruleIndex,
+                inheritedNoResolve: inheritedNoResolve,
+                ruleSetResolver: ruleSetResolver,
+                byteRuleSets: byteRuleSets,
+                activeRuleSets: &activeRuleSets,
+                into: &sink
+            )
+            line += 1
+            if j >= n { break }
+            i = j + 1
+        }
+    }
+
+    private static func parseRuleSetLine(
+        _ raw: UnsafeRawBufferPointer,
+        _ range: Range<Int>,
+        line: Int,
+        policyID: UInt16,
+        ruleIndex: UInt32,
+        inheritedNoResolve: Bool,
+        ruleSetResolver: ((UnsafeBufferPointer<UInt8>) -> UnsafeRawBufferPointer?)?,
+        byteRuleSets: [[UInt8]: [UInt8]]?,
+        activeRuleSets: inout Set<[UInt8]>,
+        into sink: inout RuleSink
+    ) throws(RuleParseError) {
+        let base = range.lowerBound
+        var start = base
+        var stop = range.upperBound
+        while start < stop && isInlineSpace(raw[start]) { start += 1 }
+        while stop > start && isInlineSpace(raw[stop - 1]) { stop -= 1 }
+        if start == stop { return }
+        if raw[start] == UInt8(ascii: "#") { return }
+        if stop - start >= 2 && raw[start] == UInt8(ascii: "/") && raw[start + 1] == UInt8(ascii: "/") {
+            return
+        }
+
+        // Support YAML list item prefix "- "
+        if stop - start >= 2 && raw[start] == UInt8(ascii: "-") && isInlineSpace(raw[start + 1]) {
+            start += 2
+            while start < stop && isInlineSpace(raw[start]) { start += 1 }
+        }
+        // Support surrounding quotes '...' or "..."
+        if stop - start >= 2 {
+            let first = raw[start]
+            let last = raw[stop - 1]
+            if (first == UInt8(ascii: "'") && last == UInt8(ascii: "'")) ||
+               (first == UInt8(ascii: "\"") && last == UInt8(ascii: "\"")) {
+                start += 1
+                stop -= 1
+                while start < stop && isInlineSpace(raw[start]) { start += 1 }
+                while stop > start && isInlineSpace(raw[stop - 1]) { stop -= 1 }
+            }
+        }
+        if start == stop { return }
+
+        // Split comma segments respecting parentheses
+        var segments: [Range<Int>] = []
+        var cursor = start
+        var depth = 0
+        while cursor < stop {
+            var comma = cursor
+            while comma < stop {
+                let b = raw[comma]
+                if b == UInt8(ascii: "(") { depth += 1 }
+                else if b == UInt8(ascii: ")") && depth > 0 { depth -= 1 }
+                else if b == UInt8(ascii: ",") && depth == 0 { break }
+                comma += 1
+            }
+            var s = cursor, e = comma
+            while s < e && isInlineSpace(raw[s]) { s += 1 }
+            while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
+            segments.append(s..<e)
+            if comma >= stop { break }
+            cursor = comma + 1
+        }
+        if segments.isEmpty || segments[0].isEmpty { return }
+
+        var typeName = [UInt8]()
+        typeName.reserveCapacity(segments[0].count)
+        for i in segments[0] { typeName.append(upperByte(raw[i])) }
+
+        if let kind = kindTable[typeName] {
+            guard segments.count >= 2, !segments[1].isEmpty else {
+                throw RuleParseError(.malformedLine, line: line, column: 1, "expected TYPE,ARG in rule-set")
+            }
+            let arg = segments[1]
+            var hasNoResolve = inheritedNoResolve
+            if segments.count >= 3 {
+                for seg in segments[2...] {
+                    if seg.isEmpty { continue }
+                    if isNoResolve(raw, seg) {
+                        hasNoResolve = true
+                    } else if segments.count == 3 {
+                        // Inline policy in rule-provider line (e.g. DOMAIN,foo.com,DIRECT); ignored
+                        continue
+                    } else {
+                        throw RuleParseError(
+                            .unknownFlag, line: line, column: seg.lowerBound - base + 1,
+                            "unsupported flag in rule-set"
+                        )
+                    }
+                }
+            }
+
+            switch kind {
+            case .domain:
+                try validateDomain(raw, arg, line: line, base: base)
+                sink.addExact(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+            case .domainSuffix:
+                try validateDomain(raw, arg, line: line, base: base)
+                sink.addSuffix(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+            case .domainKeyword:
+                try validateKeyword(raw, arg, line: line, base: base)
+                sink.addKeyword(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+            case .ipCIDR:
+                let parsed = try parseCIDR(raw, arg, line: line, base: base)
+                sink.addIP(address: parsed.address, prefix: parsed.prefix, isIPv6: parsed.isIPv6, isSource: false, policyID: policyID, ruleIndex: ruleIndex)
+            case .srcIPCIDR:
+                let parsed = try parseCIDR(raw, arg, line: line, base: base)
+                sink.addIP(address: parsed.address, prefix: parsed.prefix, isIPv6: parsed.isIPv6, isSource: true, policyID: policyID, ruleIndex: ruleIndex)
+            case .port(let side):
+                let intervals = try parsePortList(raw, arg, line: line, base: base)
+                sink.addPort(intervals, side: side, policyID: policyID, ruleIndex: ruleIndex)
+            case .processName:
+                try validatePrintable(raw, arg, line: line, base: base, name: "process name")
+                sink.addProcessName(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+            case .processPath:
+                try validatePrintable(raw, arg, line: line, base: base, name: "process path")
+                sink.addProcessPath(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+            case .network:
+                let proto = try parseNetwork(raw, arg, line: line, base: base)
+                sink.addNetwork(proto, policyID: policyID, ruleIndex: ruleIndex)
+            case .dscp:
+                let val = try parseDSCP(raw, arg, line: line, base: base)
+                sink.addDSCP(val, policyID: policyID, ruleIndex: ruleIndex)
+            case .geoIP:
+                let code = try parseGeoIP(raw, arg, line: line, base: base)
+                sink.addGeoIP(code, policyID: policyID, ruleIndex: ruleIndex)
+            case .and:
+                let root = try parseAndOrCondition(raw, arg, isAnd: true, line: line, base: base, into: &sink)
+                sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+            case .or:
+                let root = try parseAndOrCondition(raw, arg, isAnd: false, line: line, base: base, into: &sink)
+                sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+            case .not:
+                let root = try parseNotCondition(raw, arg, line: line, base: base, into: &sink)
+                sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+            case .subRule:
+                let root = try parseSubRuleCondition(raw, arg, line: line, base: base, into: &sink)
+                sink.addLogicRule(rootNodeIndex: root, policyID: policyID, ruleIndex: ruleIndex)
+            case .ruleSet:
+                let nestedName = [UInt8](raw[arg])
+                guard !activeRuleSets.contains(nestedName) else {
+                    throw RuleParseError(.circularRuleSet, line: line, column: arg.lowerBound - base + 1, "circular reference to rule-set '\(String(decoding: nestedName, as: UTF8.self))'")
+                }
+                if let byteMap = byteRuleSets, let data = byteMap[nestedName] {
+                    activeRuleSets.insert(nestedName)
+                    defer { activeRuleSets.remove(nestedName) }
+                    try withBytes(data, line: line) { ruleSetBytes in
+                        try parseRuleSetPayload(
+                            ruleSetBytes,
+                            policyID: policyID,
+                            ruleIndex: ruleIndex,
+                            inheritedNoResolve: hasNoResolve,
+                            ruleSetResolver: ruleSetResolver,
+                            byteRuleSets: byteRuleSets,
+                            activeRuleSets: &activeRuleSets,
+                            into: &sink
+                        )
+                    }
+                } else if let resolver = ruleSetResolver {
+                    let resolved: UnsafeRawBufferPointer? = nestedName.withUnsafeBufferPointer { nameBuf in
+                        resolver(nameBuf)
+                    }
+                    guard let nestedBytes = resolved else {
+                        throw RuleParseError(.unknownRuleSet, line: line, column: arg.lowerBound - base + 1, "rule-set '\(String(decoding: nestedName, as: UTF8.self))' not found")
+                    }
+                    activeRuleSets.insert(nestedName)
+                    defer { activeRuleSets.remove(nestedName) }
+                    try parseRuleSetPayload(
+                        nestedBytes,
+                        policyID: policyID,
+                        ruleIndex: ruleIndex,
+                        inheritedNoResolve: hasNoResolve,
+                        ruleSetResolver: ruleSetResolver,
+                        byteRuleSets: byteRuleSets,
+                        activeRuleSets: &activeRuleSets,
+                        into: &sink
+                    )
+                } else {
+                    throw RuleParseError(.unknownRuleSet, line: line, column: arg.lowerBound - base + 1, "rule-set '\(String(decoding: nestedName, as: UTF8.self))' not found")
+                }
+            case .match:
+                throw RuleParseError(.malformedLine, line: line, column: 1, "MATCH is not allowed inside a RULE-SET")
+            }
+        } else {
+            // Check for domain-only or ipcidr-only format (e.g. behavior: domain or behavior: ipcidr)
+            guard segments.count == 1 else {
+                throw RuleParseError(
+                    .unknownRuleType, line: line, column: 1,
+                    "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))'"
+                )
+            }
+            let token = segments[0]
+            var hasSlash = false
+            for i in token where raw[i] == UInt8(ascii: "/") {
+                hasSlash = true
+                break
+            }
+            if hasSlash {
+                let parsed = try parseCIDR(raw, token, line: line, base: base)
+                sink.addIP(address: parsed.address, prefix: parsed.prefix, isIPv6: parsed.isIPv6, isSource: false, policyID: policyID, ruleIndex: ruleIndex)
+            } else if raw[token.lowerBound] == UInt8(ascii: ".") {
+                let sub = (token.lowerBound + 1)..<token.upperBound
+                try validateDomain(raw, sub, line: line, base: base)
+                sink.addSuffix(raw, sub, policyID: policyID, ruleIndex: ruleIndex)
+            } else if token.count >= 2 && raw[token.lowerBound] == UInt8(ascii: "+") && raw[token.lowerBound + 1] == UInt8(ascii: ".") {
+                let sub = (token.lowerBound + 2)..<token.upperBound
+                try validateDomain(raw, sub, line: line, base: base)
+                sink.addSuffix(raw, sub, policyID: policyID, ruleIndex: ruleIndex)
+            } else {
+                try validateDomain(raw, token, line: line, base: base)
+                sink.addExact(raw, token, policyID: policyID, ruleIndex: ruleIndex)
+            }
+        }
     }
 
     // MARK: - Validators
@@ -690,7 +1018,7 @@ struct RuleParser {
         case .geoIP:
             let code = try parseGeoIP(raw, arg, line: line, base: base)
             return sink.addLogicNode(LogicNode(op: LogicOp.geoIP.rawValue, countryCode: code))
-        case .subRule, .match:
+        case .subRule, .match, .ruleSet:
             throw RuleParseError(.malformedLine, line: line, column: parts[0].lowerBound - base + 1, "cannot nest \(String(decoding: typeName, as: UTF8.self)) inside condition")
         }
     }

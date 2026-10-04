@@ -680,6 +680,222 @@ private func matchDomain(
             #expect(rules.policyName(res80!.policyID) == "SuffixRule")
         }
     }
+
+    @Test func ruleSetClassical() throws {
+        let rulesText = """
+            RULE-SET,my-rules,PROXY
+            MATCH,DIRECT
+            """
+        let listText = """
+            # Classical rules in rule-set
+            DOMAIN,exact.com
+            DOMAIN-SUFFIX,suffix.com
+            DOMAIN-KEYWORD,keyword
+            IP-CIDR,192.168.50.0/24
+            PORT,9000
+            PROCESS-NAME,curl
+            NETWORK,tcp
+            DSCP,10
+            GEOIP,JP
+            """
+        let data = Data(rulesText.utf8)
+        let rules = try data.withUnsafeBytes { raw in
+            try RuleCompiler.compile(raw, ruleSets: ["my-rules": listText])
+        }
+        let matcher = Matcher(rules)
+
+        // Exact domain
+        let resExact = matchDomain(matcher, "exact.com")
+        #expect(resExact?.ruleIndex == 0)
+        #expect(rules.policyName(resExact!.policyID) == "PROXY")
+
+        // Suffix
+        let resSuffix = matchDomain(matcher, "sub.suffix.com")
+        #expect(resSuffix?.ruleIndex == 0)
+        #expect(rules.policyName(resSuffix!.policyID) == "PROXY")
+
+        // Keyword
+        let resKw = matchDomain(matcher, "mykeyworddomain.org")
+        #expect(resKw?.ruleIndex == 0)
+        #expect(rules.policyName(resKw!.policyID) == "PROXY")
+
+        // IP-CIDR
+        let ctxIP = MatchContext(targetAddress: v4(0xC0A8_3205)) // 192.168.50.5
+        let resIP = matcher.match(context: ctxIP)
+        #expect(resIP?.ruleIndex == 0)
+        #expect(rules.policyName(resIP!.policyID) == "PROXY")
+
+        // Port
+        let ctxPort = MatchContext(targetPort: 9000)
+        let resPort = matcher.match(context: ctxPort)
+        #expect(resPort?.ruleIndex == 0)
+        #expect(rules.policyName(resPort!.policyID) == "PROXY")
+
+        // Process name
+        let pName = Array("curl".utf8)
+        let resProc = pName.withUnsafeBufferPointer {
+            matcher.match(context: MatchContext(processName: $0))
+        }
+        #expect(resProc?.ruleIndex == 0)
+        #expect(rules.policyName(resProc!.policyID) == "PROXY")
+
+        // Network
+        let resNet = matcher.match(context: MatchContext(network: .tcp))
+        #expect(resNet?.ruleIndex == 0)
+        #expect(rules.policyName(resNet!.policyID) == "PROXY")
+
+        // DSCP
+        let resDscp = matcher.match(context: MatchContext(dscp: 10))
+        #expect(resDscp?.ruleIndex == 0)
+        #expect(rules.policyName(resDscp!.policyID) == "PROXY")
+
+        // GeoIP
+        let resGeo = matcher.match(context: MatchContext(countryCode: 0x4A50)) // 'JP'
+        #expect(resGeo?.ruleIndex == 0)
+        #expect(rules.policyName(resGeo!.policyID) == "PROXY")
+
+        // Miss fallback to MATCH
+        let resMiss = matchDomain(matcher, "unmatched.net")
+        #expect(resMiss?.ruleIndex == 1)
+        #expect(rules.policyName(resMiss!.policyID) == "DIRECT")
+    }
+
+    @Test func ruleSetPayloadFormats() throws {
+        let rulesText = """
+            RULE-SET,domain-set,PROXY
+            RULE-SET,cidr-set,DIRECT
+            MATCH,FALLBACK
+            """
+        let domainPayload = """
+            # Mixed plain domains, suffix prefixes, yaml dash, and quotes
+            plain.com
+            .dot-suffix.org
+            +.plus-suffix.net
+            - yaml-style.com
+            - '.quoted-yaml.io'
+            - "+.plus-quoted.co"
+            """
+        let cidrPayload = """
+            10.10.0.0/16
+            2001:db8:abcd::/48
+            - '172.16.0.0/12'
+            """
+        let data = Data(rulesText.utf8)
+        let rules = try data.withUnsafeBytes { raw in
+            try RuleCompiler.compile(raw, ruleSets: [
+                "domain-set": domainPayload,
+                "cidr-set": cidrPayload,
+            ])
+        }
+        let matcher = Matcher(rules)
+
+        #expect(rules.policyName(matchDomain(matcher, "plain.com")!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "sub.dot-suffix.org")!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "deep.plus-suffix.net")!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "yaml-style.com")!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "sub.quoted-yaml.io")!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "sub.plus-quoted.co")!.policyID) == "PROXY")
+
+        let ctxV4 = MatchContext(targetAddress: v4(0x0A0A_0102)) // 10.10.1.2
+        #expect(rules.policyName(matcher.match(context: ctxV4)!.policyID) == "DIRECT")
+
+        let ctxV6 = MatchContext(targetAddress: v6("20010DB8ABCD00000000000000000001"))
+        #expect(rules.policyName(matcher.match(context: ctxV6)!.policyID) == "DIRECT")
+
+        let ctxYamlCIDR = MatchContext(targetAddress: v4(0xAC10_0505)) // 172.16.5.5
+        #expect(rules.policyName(matcher.match(context: ctxYamlCIDR)!.policyID) == "DIRECT")
+    }
+
+    @Test func ruleSetFileOrderPriority() throws {
+        let rulesText = """
+            DOMAIN,beat.com,HIGH_PRIO
+            RULE-SET,mid-set,MID_PRIO
+            DOMAIN,win.com,LOW_PRIO
+            MATCH,FALLBACK
+            """
+        let midPayload = """
+            DOMAIN,beat.com
+            DOMAIN,win.com
+            """
+        let data = Data(rulesText.utf8)
+        let rules = try data.withUnsafeBytes { raw in
+            try RuleCompiler.compile(raw, ruleSets: ["mid-set": midPayload])
+        }
+        let matcher = Matcher(rules)
+
+        let resBeat = matchDomain(matcher, "beat.com")
+        #expect(resBeat?.ruleIndex == 0)
+        #expect(rules.policyName(resBeat!.policyID) == "HIGH_PRIO")
+
+        let resWin = matchDomain(matcher, "win.com")
+        #expect(resWin?.ruleIndex == 1)
+        #expect(rules.policyName(resWin!.policyID) == "MID_PRIO")
+    }
+
+    @Test func ruleSetInlinePolicyOverridden() throws {
+        let rulesText = """
+            RULE-SET,my-set,RULE_SET_TARGET
+            """
+        let payload = """
+            DOMAIN,foo.com,INLINE_IGNORED
+            """
+        let data = Data(rulesText.utf8)
+        let rules = try data.withUnsafeBytes { raw in
+            try RuleCompiler.compile(raw, ruleSets: ["my-set": payload])
+        }
+        let matcher = Matcher(rules)
+        let res = matchDomain(matcher, "foo.com")
+        #expect(rules.policyName(res!.policyID) == "RULE_SET_TARGET")
+    }
+
+    @Test func ruleSetNested() throws {
+        let rulesText = """
+            RULE-SET,parent,PARENT_POLICY
+            """
+        let parentPayload = """
+            DOMAIN,parent.com
+            RULE-SET,child
+            """
+        let childPayload = """
+            DOMAIN,child.com
+            """
+        let data = Data(rulesText.utf8)
+        let rules = try data.withUnsafeBytes { raw in
+            try RuleCompiler.compile(raw, ruleSets: [
+                "parent": parentPayload,
+                "child": childPayload,
+            ])
+        }
+        let matcher = Matcher(rules)
+        #expect(rules.policyName(matchDomain(matcher, "parent.com")!.policyID) == "PARENT_POLICY")
+        #expect(rules.policyName(matchDomain(matcher, "child.com")!.policyID) == "PARENT_POLICY")
+    }
+
+    @Test func ruleSetWithLogic() throws {
+        let rulesText = """
+            RULE-SET,logic-set,LOGIC_TARGET
+            MATCH,FINAL
+            """
+        let logicPayload = """
+            AND,((DOMAIN,logic.com),(NETWORK,tcp))
+            """
+        let data = Data(rulesText.utf8)
+        let rules = try data.withUnsafeBytes { raw in
+            try RuleCompiler.compile(raw, ruleSets: ["logic-set": logicPayload])
+        }
+        let matcher = Matcher(rules)
+
+        let dBytes = Array("logic.com".utf8)
+        dBytes.withUnsafeBufferPointer { buf in
+            let resTCP = matcher.match(context: MatchContext(domain: buf, network: .tcp))
+            #expect(resTCP?.ruleIndex == 0)
+            #expect(rules.policyName(resTCP!.policyID) == "LOGIC_TARGET")
+
+            let resUDP = matcher.match(context: MatchContext(domain: buf, network: .udp))
+            #expect(resUDP?.ruleIndex == 1)
+            #expect(rules.policyName(resUDP!.policyID) == "FINAL")
+        }
+    }
 }
 
 // MARK: - Parser errors
@@ -701,7 +917,27 @@ private func matchDomain(
     }
 
     @Test func unknownRuleType() {
-        expectError("RULE-SET,myset,DIRECT\n", .unknownRuleType, line: 1)
+        expectError("UNKNOWN-TYPE,myset,DIRECT\n", .unknownRuleType, line: 1)
+    }
+
+    @Test func unknownRuleSet() {
+        expectError("RULE-SET,myset,DIRECT\n", .unknownRuleSet, line: 1)
+    }
+
+    @Test func circularRuleSet() {
+        let rules = "RULE-SET,setA,DIRECT\n"
+        let data = Data(rules.utf8)
+        let setA = "RULE-SET,setB\n"
+        let setB = "RULE-SET,setA\n"
+        do {
+            _ = try RuleCompiler.compile(data.withUnsafeBytes { $0 }, ruleSets: [
+                "setA": setA,
+                "setB": setB,
+            ])
+            Issue.record("expected circularRuleSet error")
+        } catch {
+            #expect(error.code == .circularRuleSet)
+        }
     }
 
     @Test func errorLineNumbers() {

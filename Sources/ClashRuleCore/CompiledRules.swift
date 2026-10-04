@@ -279,22 +279,78 @@ extension RuleSink {
 
 /// Public compile entry point.
 public enum RuleCompiler {
+    /// Resolves an external rule-set by name into a buffer of raw UTF-8 bytes.
+    public typealias RuleSetResolver = (UnsafeBufferPointer<UInt8>) -> UnsafeRawBufferPointer?
+
     /// Parses UTF-8 rule text and compiles it into an immutable snapshot.
     ///
-    /// - Parameter input: raw UTF-8 bytes of the rule file (borrowed, zero-copy).
+    /// - Parameters:
+    ///   - input: raw UTF-8 bytes of the rule file (borrowed, zero-copy).
+    ///   - ruleSetResolver: optional callback resolving external RULE-SET references.
     /// - Throws: `RuleParseError` (typed) with 1-based line/column on failure.
-    public static func compile(_ input: UnsafeRawBufferPointer) throws(RuleParseError) -> CompiledRules {
+    public static func compile(
+        _ input: UnsafeRawBufferPointer,
+        ruleSetResolver: RuleSetResolver? = nil
+    ) throws(RuleParseError) -> CompiledRules {
         var sink = RuleSink()
-        try RuleParser.parse(input, into: &sink)
+        try RuleParser.parse(input, ruleSetResolver: ruleSetResolver, into: &sink)
+        return sink.finish()
+    }
+
+    /// Convenience overload taking an in-memory dictionary of rule-set raw buffers.
+    public static func compile(
+        _ input: UnsafeRawBufferPointer,
+        ruleSets: [String: UnsafeRawBufferPointer]
+    ) throws(RuleParseError) -> CompiledRules {
+        var byteMap: [[UInt8]: UnsafeRawBufferPointer] = [:]
+        byteMap.reserveCapacity(ruleSets.count)
+        for (k, v) in ruleSets {
+            byteMap[[UInt8](k.utf8)] = v
+        }
+        return try compile(input) { nameBuf in
+            byteMap[[UInt8](nameBuf)]
+        }
+    }
+
+    /// Convenience overload taking an in-memory dictionary of rule-set strings.
+    public static func compile(
+        _ input: UnsafeRawBufferPointer,
+        ruleSets: [String: String]
+    ) throws(RuleParseError) -> CompiledRules {
+        var byteMap: [[UInt8]: [UInt8]] = [:]
+        byteMap.reserveCapacity(ruleSets.count)
+        for (k, v) in ruleSets {
+            byteMap[[UInt8](k.utf8)] = [UInt8](v.utf8)
+        }
+        var sink = RuleSink()
+        try RuleParser.parse(input, byteRuleSets: byteMap, into: &sink)
+        return sink.finish()
+    }
+
+    /// Convenience overload taking an in-memory dictionary of byte-array rule sets.
+    public static func compile(
+        _ input: UnsafeRawBufferPointer,
+        ruleSets: [String: [UInt8]]
+    ) throws(RuleParseError) -> CompiledRules {
+        var byteMap: [[UInt8]: [UInt8]] = [:]
+        byteMap.reserveCapacity(ruleSets.count)
+        for (k, v) in ruleSets {
+            byteMap[[UInt8](k.utf8)] = v
+        }
+        var sink = RuleSink()
+        try RuleParser.parse(input, byteRuleSets: byteMap, into: &sink)
         return sink.finish()
     }
 
     /// Span-based entry (SE-0447) — the preferred zero-copy API where the host
     /// can construct a `RawSpan` (convenience properties need macOS 26+ / iOS 26+).
     @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
-    public static func compile(_ input: RawSpan) throws(RuleParseError) -> CompiledRules {
+    public static func compile(
+        _ input: RawSpan,
+        ruleSetResolver: RuleSetResolver? = nil
+    ) throws(RuleParseError) -> CompiledRules {
         try input.withUnsafeBytes { (raw: UnsafeRawBufferPointer) throws(RuleParseError) in
-            try compile(raw)
+            try compile(raw, ruleSetResolver: ruleSetResolver)
         }
     }
 }

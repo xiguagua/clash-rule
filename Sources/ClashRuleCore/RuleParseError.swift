@@ -9,6 +9,8 @@ public struct RuleParseError: Error, Sendable, Equatable {
         case invalidAddress
         case unknownFlag
         case policyTableFull
+        case unknownRuleSet
+        case circularRuleSet
     }
 
     public let code: Code

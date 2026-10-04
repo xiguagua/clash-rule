@@ -15,6 +15,7 @@ public enum RuleKind: Sendable, Equatable {
     case or
     case not
     case subRule
+    case ruleSet
     case match
 }
 
