@@ -1,12 +1,12 @@
 # AGENTS.md — clash-rule
 
-Swift implementation of a Clash rule parsing/matching engine. **Planning stage: no code exists yet** — only `docs/PLAN.md` (in Chinese), which is the design source of truth. Read it before writing anything.
+Swift implementation of a Clash rule parsing/matching engine. `docs/PLAN.md` (in Chinese) is the design source of truth. Read it before writing anything.
 
 ## Current state
 
-- **M1/M2/M3 rules implemented**: `Package.swift` + `ClashRuleCore` (Parser / Compiler / flat structures / Matcher / Logic rules / RULE-SET / GEOIP / PROCESS / NETWORK / DSCP) + Swift Testing suite. No C ABI or NIO target yet (see `PLAN.md` §8 milestones).
+- See `docs/PLAN.md` header for current milestone status and roadmap.
 - Commands: `swift build`, `swift test` (58 tests, Swift Testing framework, `@testable import ClashRuleCore`). Debug fixture helpers live at the top of `Tests/ClashRuleCoreTests/CoreTests.swift`.
-- Not committed blindly: run `swift test` before every commit; performance/RAM targets (§7) are CI-blocking once benchmarks land in M5.
+- Not committed blindly: run `swift test` before every commit; performance/RAM targets (`docs/PLAN.md` §7) are CI-blocking once benchmarks land in M5.
 
 ## Toolchain reality check (verified on this machine)
 
