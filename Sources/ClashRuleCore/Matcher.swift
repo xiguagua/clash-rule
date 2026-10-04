@@ -46,32 +46,50 @@ public struct Matcher: Sendable {
         targetPort: UInt16,
         sourcePort: UInt16
     ) -> MatchResult? {
-        var bestRule = UInt32.max
-        var bestPolicy: UInt16 = 0
-        func consider(_ hit: (policy: UInt16, rule: UInt32)?) {
-            guard let hit, hit.rule < bestRule else { return }
-            bestRule = hit.rule
-            bestPolicy = hit.policy
-        }
+        var collector = CandidateCollector()
 
-        // MATCH baseline (always matches).
         if rules.hasMatchRule {
-            consider((rules.matchPolicy, rules.matchRuleIndex))
+            collector.consider(policy: rules.matchPolicy, rule: rules.matchRuleIndex)
         }
 
         if domain.count > 0 {
-            consider(rules.lookupExactDomain(domain))
-            consider(rules.lookupSuffix(domain))
-            consider(rules.lookupKeyword(domain))
+            collector.consider(rules.lookupExactDomain(domain))
+            collector.consider(rules.lookupSuffix(domain))
+            collector.consider(rules.lookupKeyword(domain))
         }
 
         if let address = targetAddress {
-            consider(rules.lookupAddress(address))
+            collector.consider(rules.lookupAddress(address))
         }
 
-        consider(rules.lookupPort(targetPort, isDestination: true))
-        consider(rules.lookupPort(sourcePort, isDestination: false))
+        collector.consider(rules.lookupPort(targetPort, isDestination: true))
+        collector.consider(rules.lookupPort(sourcePort, isDestination: false))
 
+        return collector.finish()
+    }
+}
+
+/// Zero-cost, stack-allocated arbiter that tracks the winning (lowest ruleIndex) candidate.
+struct CandidateCollector: BitwiseCopyable, Sendable {
+    var bestRule: UInt32 = UInt32.max
+    var bestPolicy: UInt16 = 0
+
+    @inline(__always)
+    mutating func consider(_ hit: (policy: UInt16, rule: UInt32)?) {
+        guard let hit, hit.rule < bestRule else { return }
+        bestRule = hit.rule
+        bestPolicy = hit.policy
+    }
+
+    @inline(__always)
+    mutating func consider(policy: UInt16, rule: UInt32) {
+        guard rule < bestRule else { return }
+        bestRule = rule
+        bestPolicy = policy
+    }
+
+    @inline(__always)
+    func finish() -> MatchResult? {
         guard bestRule != UInt32.max else { return nil }
         return MatchResult(policyID: bestPolicy, ruleIndex: bestRule)
     }
@@ -222,8 +240,12 @@ extension CompiledRules {
         guard position >= 0 else { return nil }
         var best: (policy: UInt16, rule: UInt32)? = nil
         var i = position
-        while i >= 0 && portEntries[i].low <= port {
+        while i >= 0 {
             let entry = portEntries[i]
+            if entry.maxHigh < port {
+                // No entry in 0...i has high >= port
+                break
+            }
             if entry.high >= port {
                 let (policy, rule) = isDestination ? (entry.dstPolicy, entry.dstRule) : (entry.srcPolicy, entry.srcRule)
                 if rule != PortEntry.noRule {

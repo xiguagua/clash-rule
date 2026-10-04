@@ -153,6 +153,11 @@ extension RuleSink {
             if a.low != b.low { return a.low < b.low }
             return a.high < b.high
         }
+        var runningMax: UInt16 = 0
+        for i in 0..<portArray.count {
+            runningMax = max(runningMax, portArray[i].high)
+            portArray[i].maxHigh = runningMax
+        }
 
         // Keywords.
         var keywordArenaBytes = ByteArena()

@@ -45,6 +45,7 @@ struct IPNode: BitwiseCopyable, Sendable {
 struct PortEntry: BitwiseCopyable, Sendable {
     var low: UInt16 = 0
     var high: UInt16 = 0
+    var maxHigh: UInt16 = 0
     var dstPolicy: UInt16 = 0
     var dstRule: UInt32 = PortEntry.noRule
     var srcPolicy: UInt16 = 0

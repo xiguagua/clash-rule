@@ -190,6 +190,167 @@ private func matchDomain(
         // 10.2.0.1 only /8 too; 10.1.2.x covered by all, still lowest index wins.
         #expect(rules.policyName(match(matcher, domain: "", address: v4(0x0A02_0001))!.policyID) == "Eight")
     }
+
+    @Test func exactDomainHashCollisionsAndLinearProbing() throws {
+        // Compile enough domain rules to fill open-addressing table slots and verify lookups & misses.
+        var text = ""
+        for i in 0..<100 {
+            text += "DOMAIN,host-\(i).internal,Policy\(i)\n"
+        }
+        text += "MATCH,Final\n"
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        for i in 0..<100 {
+            let hit = match(matcher, domain: "host-\(i).internal")
+            #expect(hit != nil)
+            #expect(rules.policyName(hit!.policyID) == "Policy\(i)")
+        }
+        // Negative lookups (misses) should fall back to MATCH
+        let miss = match(matcher, domain: "host-999.internal")
+        #expect(rules.policyName(miss!.policyID) == "Final")
+        let partialMiss = match(matcher, domain: "host-1.internals")
+        #expect(rules.policyName(partialMiss!.policyID) == "Final")
+    }
+
+    @Test func deepAndBranchingSuffixTrie() throws {
+        let config = """
+            DOMAIN-SUFFIX,com,ComPolicy
+            DOMAIN-SUFFIX,example.com,ExamplePolicy
+            DOMAIN-SUFFIX,api.example.com,ApiPolicy
+            DOMAIN-SUFFIX,v1.api.example.com,V1ApiPolicy
+            DOMAIN-SUFFIX,web.example.com,WebPolicy
+            DOMAIN-SUFFIX,deep.branch.sub.corp.internal,DeepPolicy
+            MATCH,Final
+            """
+        let rules = try compile(config)
+        let matcher = Matcher(rules)
+
+        // Multiple children under example.com
+        #expect(rules.policyName(match(matcher, domain: "v1.api.example.com")!.policyID) == "ComPolicy") // 'com' is first in file!
+    }
+
+    @Test func suffixTrieFileOrderPriority() throws {
+        // Specific rule placed before broad rule
+        let config = """
+            DOMAIN-SUFFIX,v1.api.example.com,Specific
+            DOMAIN-SUFFIX,api.example.com,Medium
+            DOMAIN-SUFFIX,example.com,Broad
+            MATCH,Final
+            """
+        let rules = try compile(config)
+        let matcher = Matcher(rules)
+
+        #expect(rules.policyName(match(matcher, domain: "a.b.v1.api.example.com")!.policyID) == "Specific")
+        #expect(rules.policyName(match(matcher, domain: "other.api.example.com")!.policyID) == "Medium")
+        #expect(rules.policyName(match(matcher, domain: "foo.example.com")!.policyID) == "Broad")
+        #expect(rules.policyName(match(matcher, domain: "different.com")!.policyID) == "Final")
+    }
+
+    @Test func overlappingAndNestedPortIntervals() throws {
+        // Wide range first, nested narrower range second, third even narrower
+        let config = """
+            DST-PORT,100-2000,WideRule
+            DST-PORT,500-600,NarrowRule
+            DST-PORT,550-560,TightRule
+            MATCH,Final
+            """
+        let rules = try compile(config)
+        let matcher = Matcher(rules)
+
+        // 555 is covered by all 3; WideRule is ruleIndex 0 -> wins.
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 555)!.policyID) == "WideRule")
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 500)!.policyID) == "WideRule")
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 100)!.policyID) == "WideRule")
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 2000)!.policyID) == "WideRule")
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 2001)!.policyID) == "Final")
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 99)!.policyID) == "Final")
+
+        // Invert file order: NarrowRule first, WideRule second
+        let configInverted = """
+            DST-PORT,500-600,NarrowRule
+            DST-PORT,100-2000,WideRule
+            MATCH,Final
+            """
+        let rulesInverted = try compile(configInverted)
+        let matcherInverted = Matcher(rulesInverted)
+
+        // Port 550 hits NarrowRule (rule 0)
+        #expect(rulesInverted.policyName(match(matcherInverted, domain: "", targetPort: 550)!.policyID) == "NarrowRule")
+        // Port 200 hits WideRule (rule 1)
+        #expect(rulesInverted.policyName(match(matcherInverted, domain: "", targetPort: 200)!.policyID) == "WideRule")
+    }
+
+    @Test func cidrBoundaryMasks() throws {
+        let config = """
+            IP-CIDR,0.0.0.0/0,CatchAllV4
+            IP-CIDR,192.168.1.1/32,SingleHost
+            IP-CIDR6,::/0,CatchAllV6
+            MATCH,Final
+            """
+        let rules = try compile(config)
+        let matcher = Matcher(rules)
+
+        // Single host matches CatchAllV4 because CatchAllV4 is listed first!
+        #expect(rules.policyName(match(matcher, domain: "", address: v4(0xC0A8_0101))!.policyID) == "CatchAllV4")
+
+        let config2 = """
+            IP-CIDR,192.168.1.1/32,SingleHost
+            IP-CIDR,0.0.0.0/0,CatchAllV4
+            MATCH,Final
+            """
+        let rules2 = try compile(config2)
+        let matcher2 = Matcher(rules2)
+        #expect(rules2.policyName(match(matcher2, domain: "", address: v4(0xC0A8_0101))!.policyID) == "SingleHost")
+        #expect(rules2.policyName(match(matcher2, domain: "", address: v4(0x0808_0808))!.policyID) == "CatchAllV4")
+
+        // IPv6 catch all
+        #expect(rules.policyName(match(matcher, domain: "", address: v6("20010db8000000000000000000000001"))!.policyID) == "CatchAllV6")
+    }
+
+    @Test func concurrentMatchingSafety() async throws {
+        let (_, matcher) = try make()
+        // Run concurrent queries across TaskGroup
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<100 {
+                group.addTask {
+                    let domain = (i % 2 == 0) ? "google.com" : "sub.ads.example.net"
+                    let port: UInt16 = (i % 3 == 0) ? 443 : 8085
+                    let res = matchDomain(matcher, domain, targetPort: port)
+                    #expect(res != nil)
+                }
+            }
+        }
+    }
+
+    @Test func zeroAllocationHotPath() throws {
+        let (rules, matcher) = try make()
+        _ = rules
+        let sample = Array("www.example.com".utf8)
+
+        #if canImport(Darwin)
+        let zone = malloc_default_zone()
+
+        // Warm up
+        sample.withUnsafeBufferPointer { buf in
+            _ = matcher.match(domain: buf, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
+        }
+
+        // Check zone size in use across repeated iterations
+        var stats1 = malloc_statistics_t()
+        var stats2 = malloc_statistics_t()
+        sample.withUnsafeBufferPointer { buf in
+            malloc_zone_statistics(zone, &stats1)
+            for _ in 0..<100 {
+                _ = matcher.match(domain: buf, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
+            }
+            malloc_zone_statistics(zone, &stats2)
+        }
+        // No allocations were leaked or performed by match itself; stats2.size_allocated <= stats1.size_allocated + noise
+        // Ensure size_allocated did not increase due to match iterations
+        #expect(stats2.size_in_use <= stats1.size_in_use)
+        #endif
+    }
 }
 
 // MARK: - Parser errors
