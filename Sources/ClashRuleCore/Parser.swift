@@ -17,9 +17,16 @@ struct RuleParser {
         add("DOMAIN-KEYWORD", .domainKeyword)
         add("IP-CIDR", .ipCIDR(isIPv6: false))
         add("IP-CIDR6", .ipCIDR(isIPv6: true))
+        add("SRC-IP-CIDR", .srcIPCIDR(isIPv6: false))
+        add("SRC-IP-CIDR6", .srcIPCIDR(isIPv6: true))
         add("PORT", .port(.either))
         add("DST-PORT", .port(.destination))
         add("SRC-PORT", .port(.source))
+        add("PROCESS-NAME", .processName)
+        add("PROCESS-PATH", .processPath)
+        add("NETWORK", .network)
+        add("DSCP", .dscp)
+        add("GEOIP", .geoIP)
         add("MATCH", .match)
         return table
     }()
@@ -77,7 +84,7 @@ struct RuleParser {
         guard let kind = kindTable[typeName] else {
             throw RuleParseError(
                 .unknownRuleType, line: line, column: 1,
-                "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))' (M1 supports DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6, PORT, DST-PORT, SRC-PORT, MATCH)"
+                "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))'"
             )
         }
 
@@ -97,15 +104,20 @@ struct RuleParser {
         let arg = segments[1]
         let ruleIndex = sink.nextRuleIndex
 
-        // Flags: only `no-resolve` is accepted, and only on IP-CIDR rules.
+        // Flags: only `no-resolve` is accepted, and only on IP-CIDR/GEOIP rules.
         var allowNoResolve = false
-        if case .ipCIDR = kind { allowNoResolve = true }
+        switch kind {
+        case .ipCIDR, .srcIPCIDR, .geoIP:
+            allowNoResolve = true
+        default:
+            break
+        }
         for flagRange in segments[3...] {
             if flagRange.isEmpty { continue }
             guard allowNoResolve, isNoResolve(raw, flagRange) else {
                 throw RuleParseError(
                     .unknownFlag, line: line, column: flagRange.lowerBound - base + 1,
-                    "unsupported flag (only 'no-resolve' on IP-CIDR is accepted)"
+                    "unsupported flag (only 'no-resolve' on IP-CIDR/GEOIP is accepted)"
                 )
             }
         }
@@ -124,10 +136,28 @@ struct RuleParser {
             sink.addKeyword(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
         case .ipCIDR:
             let parsed = try parseCIDR(raw, arg, line: line, base: base)
-            sink.addIP(address: parsed.address, prefix: parsed.prefix, isIPv6: parsed.isIPv6, policyID: policyID, ruleIndex: ruleIndex)
+            sink.addIP(address: parsed.address, prefix: parsed.prefix, isIPv6: parsed.isIPv6, isSource: false, policyID: policyID, ruleIndex: ruleIndex)
+        case .srcIPCIDR:
+            let parsed = try parseCIDR(raw, arg, line: line, base: base)
+            sink.addIP(address: parsed.address, prefix: parsed.prefix, isIPv6: parsed.isIPv6, isSource: true, policyID: policyID, ruleIndex: ruleIndex)
         case .port(let side):
             let intervals = try parsePortList(raw, arg, line: line, base: base)
             sink.addPort(intervals, side: side, policyID: policyID, ruleIndex: ruleIndex)
+        case .processName:
+            try validatePrintable(raw, arg, line: line, base: base, name: "process name")
+            sink.addProcessName(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+        case .processPath:
+            try validatePrintable(raw, arg, line: line, base: base, name: "process path")
+            sink.addProcessPath(raw, arg, policyID: policyID, ruleIndex: ruleIndex)
+        case .network:
+            let proto = try parseNetwork(raw, arg, line: line, base: base)
+            sink.addNetwork(proto, policyID: policyID, ruleIndex: ruleIndex)
+        case .dscp:
+            let val = try parseDSCP(raw, arg, line: line, base: base)
+            sink.addDSCP(val, policyID: policyID, ruleIndex: ruleIndex)
+        case .geoIP:
+            let code = try parseGeoIP(raw, arg, line: line, base: base)
+            sink.addGeoIP(code, policyID: policyID, ruleIndex: ruleIndex)
         case .match:
             break // handled above
         }
@@ -190,6 +220,61 @@ struct RuleParser {
                 throw RuleParseError(.invalidArgument, line: line, column: i - base + 1, "invalid character in keyword")
             }
         }
+    }
+
+    private static func validatePrintable(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int, name: String
+    ) throws(RuleParseError) {
+        guard !r.isEmpty else {
+            throw RuleParseError(.invalidArgument, line: line, column: 1, "empty \(name)")
+        }
+        for i in r {
+            guard raw[i] >= 0x20 else {
+                throw RuleParseError(.invalidArgument, line: line, column: i - base + 1, "invalid character in \(name)")
+            }
+        }
+    }
+
+    private static func parseNetwork(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
+    ) throws(RuleParseError) -> NetworkProtocol {
+        if r.count == 3 {
+            let b0 = upperByte(raw[r.lowerBound])
+            let b1 = upperByte(raw[r.lowerBound + 1])
+            let b2 = upperByte(raw[r.lowerBound + 2])
+            if b0 == UInt8(ascii: "T") && b1 == UInt8(ascii: "C") && b2 == UInt8(ascii: "P") {
+                return .tcp
+            }
+            if b0 == UInt8(ascii: "U") && b1 == UInt8(ascii: "D") && b2 == UInt8(ascii: "P") {
+                return .udp
+            }
+        }
+        throw RuleParseError(.invalidArgument, line: line, column: r.lowerBound - base + 1, "invalid network protocol (expected TCP or UDP)")
+    }
+
+    private static func parseDSCP(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
+    ) throws(RuleParseError) -> UInt8 {
+        let val = try parseDecimal(raw, r, max: 63, what: "DSCP value", errorCode: .invalidArgument, line: line, base: base)
+        return UInt8(val)
+    }
+
+    private static func parseGeoIP(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
+    ) throws(RuleParseError) -> UInt32 {
+        guard r.count >= 2 && r.count <= 4 else {
+            throw RuleParseError(.invalidArgument, line: line, column: r.lowerBound - base + 1, "invalid country code length (expected 2..4 letters)")
+        }
+        var code: UInt32 = 0
+        for i in r {
+            let b = raw[i]
+            let isLetter = (b >= UInt8(ascii: "A") && b <= UInt8(ascii: "Z")) || (b >= UInt8(ascii: "a") && b <= UInt8(ascii: "z"))
+            guard isLetter else {
+                throw RuleParseError(.invalidArgument, line: line, column: i - base + 1, "invalid character in country code")
+            }
+            code = (code << 8) | UInt32(upperByte(b))
+        }
+        return code
     }
 
     // MARK: - Address / port parsing

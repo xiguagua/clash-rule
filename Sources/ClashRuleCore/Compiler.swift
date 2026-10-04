@@ -16,7 +16,15 @@ struct RuleSink {
     let trie = SuffixTrieBuilder()
     var ipv4 = IPNodeBuilder(bitWidth: 32)
     var ipv6 = IPNodeBuilder(bitWidth: 128)
+    var srcIPv4 = IPNodeBuilder(bitWidth: 32)
+    var srcIPv6 = IPNodeBuilder(bitWidth: 128)
     var portMap: [UInt32: PortSlot] = [:]
+    var processName: [[UInt8]: (policy: UInt16, rule: UInt32)] = [:]
+    var processPath: [[UInt8]: (policy: UInt16, rule: UInt32)] = [:]
+    var tcpRule: (policy: UInt16, rule: UInt32)?
+    var udpRule: (policy: UInt16, rule: UInt32)?
+    var dscpMap: [UInt8: (policy: UInt16, rule: UInt32)] = [:]
+    var geoIPMap: [UInt32: (policy: UInt16, rule: UInt32)] = [:]
     var matchRule: (policy: UInt16, rule: UInt32)?
 
     mutating func intern(
@@ -68,12 +76,20 @@ struct RuleSink {
     }
 
     mutating func addIP(
-        address: UInt128, prefix: UInt8, isIPv6: Bool, policyID: UInt16, ruleIndex: UInt32
+        address: UInt128, prefix: UInt8, isIPv6: Bool, isSource: Bool = false, policyID: UInt16, ruleIndex: UInt32
     ) {
-        if isIPv6 {
-            ipv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+        if isSource {
+            if isIPv6 {
+                srcIPv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+            } else {
+                srcIPv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+            }
         } else {
-            ipv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+            if isIPv6 {
+                ipv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+            } else {
+                ipv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+            }
         }
     }
 
@@ -91,6 +107,49 @@ struct RuleSink {
             }
             portMap[key] = slot
         }
+    }
+
+    mutating func addProcessName(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+    ) {
+        let key = lowerBytes(raw, r)
+        if let old = processName[key], old.rule <= ruleIndex { return }
+        processName[key] = (policyID, ruleIndex)
+    }
+
+    mutating func addProcessPath(
+        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+    ) {
+        let key = lowerBytes(raw, r)
+        if let old = processPath[key], old.rule <= ruleIndex { return }
+        processPath[key] = (policyID, ruleIndex)
+    }
+
+    mutating func addNetwork(
+        _ proto: NetworkProtocol, policyID: UInt16, ruleIndex: UInt32
+    ) {
+        switch proto {
+        case .tcp:
+            if let current = tcpRule, current.rule <= ruleIndex { return }
+            tcpRule = (policyID, ruleIndex)
+        case .udp:
+            if let current = udpRule, current.rule <= ruleIndex { return }
+            udpRule = (policyID, ruleIndex)
+        }
+    }
+
+    mutating func addDSCP(
+        _ value: UInt8, policyID: UInt16, ruleIndex: UInt32
+    ) {
+        if let old = dscpMap[value], old.rule <= ruleIndex { return }
+        dscpMap[value] = (policyID, ruleIndex)
+    }
+
+    mutating func addGeoIP(
+        _ code: UInt32, policyID: UInt16, ruleIndex: UInt32
+    ) {
+        if let old = geoIPMap[code], old.rule <= ruleIndex { return }
+        geoIPMap[code] = (policyID, ruleIndex)
     }
 
     mutating func addMatch(policyID: UInt16, ruleIndex: UInt32) {

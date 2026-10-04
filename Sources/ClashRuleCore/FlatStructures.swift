@@ -61,3 +61,20 @@ struct KeywordEntry: BitwiseCopyable, Sendable {
     var policyID: UInt16 = 0
     var ruleIndex: UInt32 = 0
 }
+
+/// Entry for `GEOIP`. Stored sorted by `countryCode`.
+struct GeoIPEntry: BitwiseCopyable, Sendable {
+    var countryCode: UInt32 = 0
+    var policyID: UInt16 = 0
+    var _padding: UInt16 = 0
+    var ruleIndex: UInt32 = 0
+}
+
+/// Entry for `DSCP`.
+struct DscpEntry: BitwiseCopyable, Sendable {
+    var policyID: UInt16 = 0
+    var _padding: UInt16 = 0
+    var ruleIndex: UInt32 = DscpEntry.noRule
+
+    static let noRule = UInt32.max
+}

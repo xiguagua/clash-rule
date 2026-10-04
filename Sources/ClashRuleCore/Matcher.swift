@@ -1,3 +1,41 @@
+/// Context describing a network connection to be matched.
+public struct MatchContext: @unchecked Sendable {
+    public var domain: UnsafeBufferPointer<UInt8>
+    public var targetAddress: UInt128?
+    public var targetPort: UInt16
+    public var sourceAddress: UInt128?
+    public var sourcePort: UInt16
+    public var processName: UnsafeBufferPointer<UInt8>
+    public var processPath: UnsafeBufferPointer<UInt8>
+    public var network: NetworkProtocol?
+    public var dscp: UInt8?
+    public var countryCode: UInt32
+
+    public init(
+        domain: UnsafeBufferPointer<UInt8> = UnsafeBufferPointer(start: nil, count: 0),
+        targetAddress: UInt128? = nil,
+        targetPort: UInt16 = 0,
+        sourceAddress: UInt128? = nil,
+        sourcePort: UInt16 = 0,
+        processName: UnsafeBufferPointer<UInt8> = UnsafeBufferPointer(start: nil, count: 0),
+        processPath: UnsafeBufferPointer<UInt8> = UnsafeBufferPointer(start: nil, count: 0),
+        network: NetworkProtocol? = nil,
+        dscp: UInt8? = nil,
+        countryCode: UInt32 = 0
+    ) {
+        self.domain = domain
+        self.targetAddress = targetAddress
+        self.targetPort = targetPort
+        self.sourceAddress = sourceAddress
+        self.sourcePort = sourcePort
+        self.processName = processName
+        self.processPath = processPath
+        self.network = network
+        self.dscp = dscp
+        self.countryCode = countryCode
+    }
+}
+
 /// Zero-allocation, lock-free matcher over a compiled snapshot.
 /// Hot-path contract (docs/PLAN.md §3/§4): no `String`, no heap allocation,
 /// no locks; domain bytes arrive as a borrowed view.
@@ -12,60 +50,107 @@ public struct Matcher: Sendable {
         self.rules = rules
     }
 
-    /// Preferred entry point: domain bytes as a borrowed `Span` (SE-0447).
-    /// The span convenience properties (`Array.span`, `Data.bytes`) need
-    /// macOS 26+ / iOS 26+; on older targets use the buffer-pointer overload.
-    @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
-    public func match(
-        domain: borrowing Span<UInt8>,
-        targetAddress: UInt128?,
-        targetPort: UInt16,
-        sourcePort: UInt16
-    ) -> MatchResult? {
-        domain.withUnsafeBufferPointer { buffer in
-            match(
-                domain: buffer,
-                targetAddress: targetAddress,
-                targetPort: targetPort,
-                sourcePort: sourcePort
-            )
-        }
-    }
-
-    /// Buffer-pointer entry point, available on all supported deployment targets.
-    /// - Parameters:
-    ///   - domain: request hostname, no trailing dot; empty = unknown host.
-    ///   - targetAddress: destination IP. IPv4 is encoded in the low 32 bits;
-    ///     IPv6 as the full 128 bits (a zero high half is consulted in both tries).
-    ///   - targetPort: destination port.
-    ///   - sourcePort: source port.
-    /// - Returns: the matching rule's policy handle, or `nil` if nothing matches.
-    public func match(
-        domain: UnsafeBufferPointer<UInt8>,
-        targetAddress: UInt128?,
-        targetPort: UInt16,
-        sourcePort: UInt16
-    ) -> MatchResult? {
+    /// Match against a structured `MatchContext`. Zero heap allocation.
+    public func match(context: MatchContext) -> MatchResult? {
         var collector = CandidateCollector()
 
         if rules.hasMatchRule {
             collector.consider(policy: rules.matchPolicy, rule: rules.matchRuleIndex)
         }
 
-        if domain.count > 0 {
-            collector.consider(rules.lookupExactDomain(domain))
-            collector.consider(rules.lookupSuffix(domain))
-            collector.consider(rules.lookupKeyword(domain))
+        if context.domain.count > 0 {
+            collector.consider(rules.lookupExactDomain(context.domain))
+            collector.consider(rules.lookupSuffix(context.domain))
+            collector.consider(rules.lookupKeyword(context.domain))
         }
 
-        if let address = targetAddress {
+        if let address = context.targetAddress {
             collector.consider(rules.lookupAddress(address))
         }
 
-        collector.consider(rules.lookupPort(targetPort, isDestination: true))
-        collector.consider(rules.lookupPort(sourcePort, isDestination: false))
+        if let srcAddress = context.sourceAddress {
+            collector.consider(rules.lookupSourceAddress(srcAddress))
+        }
+
+        collector.consider(rules.lookupPort(context.targetPort, isDestination: true))
+        collector.consider(rules.lookupPort(context.sourcePort, isDestination: false))
+
+        if context.processName.count > 0 {
+            collector.consider(rules.lookupProcessName(context.processName))
+        }
+
+        if context.processPath.count > 0 {
+            collector.consider(rules.lookupProcessPath(context.processPath))
+        }
+
+        if let net = context.network {
+            collector.consider(rules.lookupNetwork(net))
+        }
+
+        if let dscp = context.dscp {
+            collector.consider(rules.lookupDSCP(dscp))
+        }
+
+        if context.countryCode != 0 {
+            collector.consider(rules.lookupGeoIP(context.countryCode))
+        }
 
         return collector.finish()
+    }
+
+    /// Buffer-pointer entry point, available on all supported deployment targets.
+    public func match(
+        domain: UnsafeBufferPointer<UInt8> = UnsafeBufferPointer(start: nil, count: 0),
+        targetAddress: UInt128? = nil,
+        targetPort: UInt16 = 0,
+        sourceAddress: UInt128? = nil,
+        sourcePort: UInt16 = 0,
+        processName: UnsafeBufferPointer<UInt8> = UnsafeBufferPointer(start: nil, count: 0),
+        processPath: UnsafeBufferPointer<UInt8> = UnsafeBufferPointer(start: nil, count: 0),
+        network: NetworkProtocol? = nil,
+        dscp: UInt8? = nil,
+        countryCode: UInt32 = 0
+    ) -> MatchResult? {
+        match(context: MatchContext(
+            domain: domain,
+            targetAddress: targetAddress,
+            targetPort: targetPort,
+            sourceAddress: sourceAddress,
+            sourcePort: sourcePort,
+            processName: processName,
+            processPath: processPath,
+            network: network,
+            dscp: dscp,
+            countryCode: countryCode
+        ))
+    }
+
+    /// Preferred entry point: domain bytes as a borrowed `Span` (SE-0447).
+    /// The span convenience properties (`Array.span`, `Data.bytes`) need
+    /// macOS 26+ / iOS 26+; on older targets use the buffer-pointer overload.
+    @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
+    public func match(
+        domain: borrowing Span<UInt8>,
+        targetAddress: UInt128? = nil,
+        targetPort: UInt16 = 0,
+        sourceAddress: UInt128? = nil,
+        sourcePort: UInt16 = 0,
+        network: NetworkProtocol? = nil,
+        dscp: UInt8? = nil,
+        countryCode: UInt32 = 0
+    ) -> MatchResult? {
+        domain.withUnsafeBufferPointer { buffer in
+            match(
+                domain: buffer,
+                targetAddress: targetAddress,
+                targetPort: targetPort,
+                sourceAddress: sourceAddress,
+                sourcePort: sourcePort,
+                network: network,
+                dscp: dscp,
+                countryCode: countryCode
+            )
+        }
     }
 }
 
@@ -110,25 +195,42 @@ public struct MatchResult: Sendable, Equatable {
 // MARK: - Lookups (internal, all zero-allocation)
 
 extension CompiledRules {
-    func lookupExactDomain(_ domain: UnsafeBufferPointer<UInt8>) -> (policy: UInt16, rule: UInt32)? {
-        guard exactSlotMask != 0, !exactEntries.isEmpty, domain.count > 0 else { return nil }
-        let hash = fnv1a(domain)
-        var position = Int(hash & UInt64(exactSlotMask))
+    private func lookupOpenAddressing(
+        _ key: UnsafeBufferPointer<UInt8>,
+        entries: ContiguousArray<ExactEntry>,
+        keys: ContiguousArray<UInt8>,
+        mask: UInt32
+    ) -> (policy: UInt16, rule: UInt32)? {
+        guard mask != 0, !entries.isEmpty, key.count > 0 else { return nil }
+        let hash = fnv1a(key)
+        var position = Int(hash & UInt64(mask))
         while true {
-            let entry = exactEntries[position]
+            let entry = entries[position]
             guard entry.keyLength != 0 else { return nil }
             let length = Int(entry.keyLength)
-            if length == domain.count {
+            if length == key.count {
                 var equal = true
                 let keyStart = Int(entry.keyOffset)
-                for k in 0..<length where lowerByte(domain[k]) != exactKeys[keyStart + k] {
+                for k in 0..<length where lowerByte(key[k]) != keys[keyStart + k] {
                     equal = false
                     break
                 }
                 if equal { return (entry.policyID, entry.ruleIndex) }
             }
-            position = (position + 1) & Int(exactSlotMask)
+            position = (position + 1) & Int(mask)
         }
+    }
+
+    func lookupExactDomain(_ domain: UnsafeBufferPointer<UInt8>) -> (policy: UInt16, rule: UInt32)? {
+        lookupOpenAddressing(domain, entries: exactEntries, keys: exactKeys, mask: exactSlotMask)
+    }
+
+    func lookupProcessName(_ process: UnsafeBufferPointer<UInt8>) -> (policy: UInt16, rule: UInt32)? {
+        lookupOpenAddressing(process, entries: processNameEntries, keys: processNameKeys, mask: processNameSlotMask)
+    }
+
+    func lookupProcessPath(_ path: UnsafeBufferPointer<UInt8>) -> (policy: UInt16, rule: UInt32)? {
+        lookupOpenAddressing(path, entries: processPathEntries, keys: processPathKeys, mask: processPathSlotMask)
     }
 
     func lookupSuffix(_ domain: UnsafeBufferPointer<UInt8>) -> (policy: UInt16, rule: UInt32)? {
@@ -203,6 +305,47 @@ extension CompiledRules {
             if best == nil || hit.rule < best!.rule { best = hit }
         }
         return best
+    }
+
+    func lookupSourceAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
+        var best = (address >> 32 == 0) ? walkAddress(srcIPv4Nodes, address: address, startBit: 31) : nil
+        if let hit = walkAddress(srcIPv6Nodes, address: address, startBit: 127) {
+            if best == nil || hit.rule < best!.rule { best = hit }
+        }
+        return best
+    }
+
+    func lookupNetwork(_ net: NetworkProtocol) -> (policy: UInt16, rule: UInt32)? {
+        switch net {
+        case .tcp:
+            return tcpRuleIndex != UInt32.max ? (tcpPolicy, tcpRuleIndex) : nil
+        case .udp:
+            return udpRuleIndex != UInt32.max ? (udpPolicy, udpRuleIndex) : nil
+        }
+    }
+
+    func lookupDSCP(_ val: UInt8) -> (policy: UInt16, rule: UInt32)? {
+        guard val < 64, !dscpTable.isEmpty else { return nil }
+        let entry = dscpTable[Int(val)]
+        return entry.ruleIndex != DscpEntry.noRule ? (entry.policyID, entry.ruleIndex) : nil
+    }
+
+    func lookupGeoIP(_ code: UInt32) -> (policy: UInt16, rule: UInt32)? {
+        guard code != 0, !geoIPEntries.isEmpty else { return nil }
+        var lo = 0
+        var hi = geoIPEntries.count - 1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let entry = geoIPEntries[mid]
+            if entry.countryCode == code {
+                return (entry.policyID, entry.ruleIndex)
+            } else if entry.countryCode < code {
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return nil
     }
 
     private func walkAddress(

@@ -351,6 +351,189 @@ private func matchDomain(
         #expect(stats2.size_in_use <= stats1.size_in_use)
         #endif
     }
+
+    @Test func sourceIPCIDR() throws {
+        let text = """
+            SRC-IP-CIDR,192.168.1.100/32,SrcDirect
+            SRC-IP-CIDR,10.0.0.0/8,SrcLAN
+            SRC-IP-CIDR6,2001:db8:1::/48,SrcV6
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        // Matching source IPv4
+        let res1 = matcher.match(sourceAddress: v4(0xC0A8_0164))
+        #expect(res1?.policyID == 0)
+        #expect(rules.policyName(res1!.policyID) == "SrcDirect")
+
+        // Matching subnet
+        let res2 = matcher.match(sourceAddress: v4(0x0A05_0505))
+        #expect(rules.policyName(res2!.policyID) == "SrcLAN")
+
+        // Destination IP must not trigger SRC-IP-CIDR
+        let res3 = matcher.match(targetAddress: v4(0x0A05_0505))
+        #expect(rules.policyName(res3!.policyID) == "Fallback")
+
+        // Matching source IPv6
+        let res4 = matcher.match(sourceAddress: v6("20010db8000100000000000000000001"))
+        #expect(rules.policyName(res4!.policyID) == "SrcV6")
+    }
+
+    @Test func processNameAndPath() throws {
+        let text = """
+            PROCESS-NAME,curl,CurlPolicy
+            PROCESS-NAME,Telegram.exe,TelegramPolicy
+            PROCESS-PATH,/usr/local/bin/git,GitPolicy
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let curl = Array("curl".utf8)
+        let curlUpper = Array("CURL".utf8)
+        let telegram = Array("telegram.exe".utf8)
+        let gitPath = Array("/usr/local/bin/git".utf8)
+        let other = Array("wget".utf8)
+
+        curl.withUnsafeBufferPointer { buf in
+            let res = matcher.match(processName: buf)
+            #expect(rules.policyName(res!.policyID) == "CurlPolicy")
+        }
+
+        curlUpper.withUnsafeBufferPointer { buf in
+            let res = matcher.match(processName: buf)
+            #expect(rules.policyName(res!.policyID) == "CurlPolicy")
+        }
+
+        telegram.withUnsafeBufferPointer { buf in
+            let res = matcher.match(processName: buf)
+            #expect(rules.policyName(res!.policyID) == "TelegramPolicy")
+        }
+
+        gitPath.withUnsafeBufferPointer { buf in
+            let res = matcher.match(processPath: buf)
+            #expect(rules.policyName(res!.policyID) == "GitPolicy")
+        }
+
+        other.withUnsafeBufferPointer { buf in
+            let res = matcher.match(processName: buf)
+            #expect(rules.policyName(res!.policyID) == "Fallback")
+        }
+    }
+
+    @Test func networkProtocol() throws {
+        let text = """
+            NETWORK,tcp,TCPPolicy
+            NETWORK,udp,UDPPolicy
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let resTCP = matcher.match(network: .tcp)
+        #expect(rules.policyName(resTCP!.policyID) == "TCPPolicy")
+
+        let resUDP = matcher.match(network: .udp)
+        #expect(rules.policyName(resUDP!.policyID) == "UDPPolicy")
+
+        let resNone = matcher.match()
+        #expect(rules.policyName(resNone!.policyID) == "Fallback")
+    }
+
+    @Test func dscp() throws {
+        let text = """
+            DSCP,4,DSCP4Policy
+            DSCP,46,EFPolicy
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let res1 = matcher.match(dscp: 4)
+        #expect(rules.policyName(res1!.policyID) == "DSCP4Policy")
+
+        let res2 = matcher.match(dscp: 46)
+        #expect(rules.policyName(res2!.policyID) == "EFPolicy")
+
+        let res3 = matcher.match(dscp: 10)
+        #expect(rules.policyName(res3!.policyID) == "Fallback")
+    }
+
+    @Test func geoIP() throws {
+        let text = """
+            GEOIP,CN,ChinaPolicy
+            GEOIP,US,USPolicy
+            GEOIP,LAN,LanPolicy,no-resolve
+            MATCH,Fallback
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let resCN = matcher.match(countryCode: packCountryCode("CN"))
+        #expect(rules.policyName(resCN!.policyID) == "ChinaPolicy")
+
+        // Lowercase query pack
+        let resCNLower = matcher.match(countryCode: packCountryCode("cn"))
+        #expect(rules.policyName(resCNLower!.policyID) == "ChinaPolicy")
+
+        let resUS = matcher.match(countryCode: packCountryCode("US"))
+        #expect(rules.policyName(resUS!.policyID) == "USPolicy")
+
+        let resLAN = matcher.match(countryCode: packCountryCode("LAN"))
+        #expect(rules.policyName(resLAN!.policyID) == "LanPolicy")
+
+        let resJP = matcher.match(countryCode: packCountryCode("JP"))
+        #expect(rules.policyName(resJP!.policyID) == "Fallback")
+    }
+
+    @Test func multiCategoryPriorityArbitration() throws {
+        let text = """
+            # Rule 0: Process matches
+            PROCESS-NAME,curl,ProcessRule
+            # Rule 1: Domain matches
+            DOMAIN,example.com,DomainRule
+            # Rule 2: GeoIP matches
+            GEOIP,CN,GeoRule
+            # Rule 3: Network matches
+            NETWORK,tcp,NetworkRule
+            """
+        let rules = try compile(text)
+        let matcher = Matcher(rules)
+
+        let domain = Array("example.com".utf8)
+        let proc = Array("curl".utf8)
+
+        // Process (rule 0) beats Domain (rule 1), Geo (rule 2), Network (rule 3)
+        domain.withUnsafeBufferPointer { dBuf in
+            proc.withUnsafeBufferPointer { pBuf in
+                let res = matcher.match(
+                    domain: dBuf,
+                    processName: pBuf,
+                    network: .tcp,
+                    countryCode: packCountryCode("CN")
+                )
+                #expect(res?.ruleIndex == 0)
+                #expect(rules.policyName(res!.policyID) == "ProcessRule")
+            }
+        }
+
+        // Without process, Domain (rule 1) beats Geo (rule 2) and Network (rule 3)
+        domain.withUnsafeBufferPointer { dBuf in
+            let res = matcher.match(
+                domain: dBuf,
+                network: .tcp,
+                countryCode: packCountryCode("CN")
+            )
+            #expect(res?.ruleIndex == 1)
+            #expect(rules.policyName(res!.policyID) == "DomainRule")
+        }
+
+        // Without domain, GeoIP (rule 2) beats Network (rule 3)
+        let resGeo = matcher.match(network: .tcp, countryCode: packCountryCode("CN"))
+        #expect(resGeo?.ruleIndex == 2)
+        #expect(rules.policyName(resGeo!.policyID) == "GeoRule")
+    }
 }
 
 // MARK: - Parser errors
@@ -428,5 +611,21 @@ private func matchDomain(
     @Test func noResolveFlagAcceptedOnCIDR() throws {
         let rules = try compile("IP-CIDR6,2001:db8::/32,L6,no-resolve\n")
         #expect(rules.ruleCount == 1)
+    }
+
+    @Test func invalidDSCP() {
+        expectError("DSCP,64,DIRECT\n", .invalidArgument, line: 1)
+        expectError("DSCP,abc,DIRECT\n", .invalidArgument, line: 1)
+    }
+
+    @Test func invalidNetwork() {
+        expectError("NETWORK,icmp,DIRECT\n", .invalidArgument, line: 1)
+        expectError("NETWORK,http,DIRECT\n", .invalidArgument, line: 1)
+    }
+
+    @Test func invalidGeoIP() {
+        expectError("GEOIP,C,DIRECT\n", .invalidArgument, line: 1)
+        expectError("GEOIP,TOOLONG,DIRECT\n", .invalidArgument, line: 1)
+        expectError("GEOIP,12,DIRECT\n", .invalidArgument, line: 1)
     }
 }

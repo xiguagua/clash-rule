@@ -27,3 +27,27 @@ func fnv1a(_ bytes: UnsafeBufferPointer<UInt8>) -> UInt64 {
 func fnv1a(_ bytes: [UInt8]) -> UInt64 {
     bytes.withUnsafeBufferPointer { fnv1a($0) }
 }
+
+/// Packs up to 4 ASCII characters into a big-endian UInt32 representation (uppercased).
+/// E.g. "CN" -> 0x0000434E, "LAN" -> 0x004C414E.
+public func packCountryCode(_ str: String) -> UInt32 {
+    packCountryCode(str.utf8)
+}
+
+public func packCountryCode<T: Sequence>(_ bytes: T) -> UInt32 where T.Element == UInt8 {
+    var code: UInt32 = 0
+    for b in bytes {
+        guard code <= 0x00FF_FFFF else { break }
+        code = (code << 8) | UInt32(upperByte(b))
+    }
+    return code
+}
+
+public func packCountryCode(_ buf: UnsafeBufferPointer<UInt8>) -> UInt32 {
+    var code: UInt32 = 0
+    for b in buf {
+        guard code <= 0x00FF_FFFF else { break }
+        code = (code << 8) | UInt32(upperByte(b))
+    }
+    return code
+}

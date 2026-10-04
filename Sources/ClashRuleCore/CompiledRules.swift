@@ -20,6 +20,8 @@ public struct CompiledRules: Sendable {
     // IP radix tries (root at index 0)
     var ipv4Nodes: ContiguousArray<IPNode>
     var ipv6Nodes: ContiguousArray<IPNode>
+    var srcIPv4Nodes: ContiguousArray<IPNode>
+    var srcIPv6Nodes: ContiguousArray<IPNode>
 
     // Ports (sorted by (low, high))
     var portEntries: ContiguousArray<PortEntry>
@@ -27,6 +29,26 @@ public struct CompiledRules: Sendable {
     // Keywords (linear scan; AC automaton comes later)
     var keywordEntries: ContiguousArray<KeywordEntry>
     var keywordArena: ContiguousArray<UInt8>
+
+    // Process name & path (open addressing, power-of-two capacity)
+    var processNameKeys: ContiguousArray<UInt8>
+    var processNameEntries: ContiguousArray<ExactEntry>
+    var processNameSlotMask: UInt32
+    var processPathKeys: ContiguousArray<UInt8>
+    var processPathEntries: ContiguousArray<ExactEntry>
+    var processPathSlotMask: UInt32
+
+    // Network protocol
+    var tcpPolicy: UInt16
+    var tcpRuleIndex: UInt32
+    var udpPolicy: UInt16
+    var udpRuleIndex: UInt32
+
+    // DSCP (64-entry flat table)
+    var dscpTable: ContiguousArray<DscpEntry>
+
+    // GeoIP (sorted by countryCode)
+    var geoIPEntries: ContiguousArray<GeoIPEntry>
 
     // MATCH fallback
     var matchPolicy: UInt16
@@ -52,31 +74,39 @@ extension RuleSink {
         let policyRangeArray = ContiguousArray(policyRanges)
         let policyArenaBytes = policyArena.bytes
 
-        // Exact domain hash table.
-        var exactKeysArena = ByteArena()
-        var exactEntryArray = ContiguousArray<ExactEntry>()
-        var exactMask: UInt32 = 0
-        if !exact.isEmpty {
-            let capacity = Self.nextPow2(max(16, exact.count * 2))
-            exactMask = UInt32(capacity - 1)
-            exactEntryArray = ContiguousArray(repeating: ExactEntry(), count: capacity)
-            // Sorted insertion keeps the layout deterministic for a given config.
-            for key in exact.keys.sorted(by: lexLess) {
-                let slot = exact[key]!
-                let keyOffset = exactKeysArena.append(key)
-                let hash = fnv1a(key)
-                var position = Int(hash & UInt64(exactMask))
-                while exactEntryArray[position].keyLength != 0 {
-                    position = (position + 1) & Int(exactMask)
+        // Open-addressing hash table builder for exact domain, process name, and process path.
+        func buildOpenAddressing(
+            _ map: [[UInt8]: (policy: UInt16, rule: UInt32)]
+        ) -> (keys: ContiguousArray<UInt8>, entries: ContiguousArray<ExactEntry>, mask: UInt32) {
+            var arena = ByteArena()
+            var entryArray = ContiguousArray<ExactEntry>()
+            var mask: UInt32 = 0
+            if !map.isEmpty {
+                let capacity = Self.nextPow2(max(16, map.count * 2))
+                mask = UInt32(capacity - 1)
+                entryArray = ContiguousArray(repeating: ExactEntry(), count: capacity)
+                for key in map.keys.sorted(by: lexLess) {
+                    let slot = map[key]!
+                    let keyOffset = arena.append(key)
+                    let hash = fnv1a(key)
+                    var position = Int(hash & UInt64(mask))
+                    while entryArray[position].keyLength != 0 {
+                        position = (position + 1) & Int(mask)
+                    }
+                    entryArray[position] = ExactEntry(
+                        keyOffset: keyOffset,
+                        keyLength: UInt16(key.count),
+                        policyID: slot.policy,
+                        ruleIndex: slot.rule
+                    )
                 }
-                exactEntryArray[position] = ExactEntry(
-                    keyOffset: keyOffset,
-                    keyLength: UInt16(key.count),
-                    policyID: slot.policy,
-                    ruleIndex: slot.rule
-                )
             }
+            return (arena.bytes, entryArray, mask)
         }
+
+        let exactTable = buildOpenAddressing(exact)
+        let processNameTable = buildOpenAddressing(processName)
+        let processPathTable = buildOpenAddressing(processPath)
 
         // Suffix trie flatten (two passes: label nodes first, then link children —
         // contiguity of each node's child block must not interleave with recursion).
@@ -137,6 +167,8 @@ extension RuleSink {
         }
         let ipv4Array = flattenIPNodes(ipv4)
         let ipv6Array = flattenIPNodes(ipv6)
+        let srcIPv4Array = flattenIPNodes(srcIPv4)
+        let srcIPv6Array = flattenIPNodes(srcIPv6)
 
         // Ports.
         var portArray = ContiguousArray(portMap.values.map { entry in
@@ -172,21 +204,48 @@ extension RuleSink {
             ))
         }
 
+        // DSCP table.
+        var dscpArray = ContiguousArray(repeating: DscpEntry(), count: 64)
+        for (val, slot) in dscpMap where val < 64 {
+            dscpArray[Int(val)] = DscpEntry(policyID: slot.policy, ruleIndex: slot.rule)
+        }
+
+        // GeoIP.
+        var geoIPArray = ContiguousArray<GeoIPEntry>()
+        for (code, slot) in geoIPMap {
+            geoIPArray.append(GeoIPEntry(countryCode: code, policyID: slot.policy, ruleIndex: slot.rule))
+        }
+        geoIPArray.sort { $0.countryCode < $1.countryCode }
+
         return CompiledRules(
             policyRangesArr: policyRangeArray,
             policyArena: policyArenaBytes,
-            exactKeys: exactKeysArena.bytes,
-            exactEntries: exactEntryArray,
-            exactSlotMask: exactMask,
+            exactKeys: exactTable.keys,
+            exactEntries: exactTable.entries,
+            exactSlotMask: exactTable.mask,
             trieLabels: trieLabelsArena.bytes,
             trieNodes: trieNodeArray,
             trieChildIndices: trieChildArray,
             trieRoot: trieRootIndex,
             ipv4Nodes: ipv4Array,
             ipv6Nodes: ipv6Array,
+            srcIPv4Nodes: srcIPv4Array,
+            srcIPv6Nodes: srcIPv6Array,
             portEntries: portArray,
             keywordEntries: keywordArray,
             keywordArena: keywordArenaBytes.bytes,
+            processNameKeys: processNameTable.keys,
+            processNameEntries: processNameTable.entries,
+            processNameSlotMask: processNameTable.mask,
+            processPathKeys: processPathTable.keys,
+            processPathEntries: processPathTable.entries,
+            processPathSlotMask: processPathTable.mask,
+            tcpPolicy: tcpRule?.policy ?? 0,
+            tcpRuleIndex: tcpRule?.rule ?? UInt32.max,
+            udpPolicy: udpRule?.policy ?? 0,
+            udpRuleIndex: udpRule?.rule ?? UInt32.max,
+            dscpTable: dscpArray,
+            geoIPEntries: geoIPArray,
             matchPolicy: matchRule?.policy ?? 0,
             matchRuleIndex: matchRule?.rule ?? 0,
             hasMatchRule: matchRule != nil,
