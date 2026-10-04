@@ -4,8 +4,8 @@ Swift implementation of a Clash rule parsing/matching engine. **Planning stage: 
 
 ## Current state
 
-- **M1 milestone is implemented**: `Package.swift` + `ClashRuleCore` (Parser / Compiler / flat structures / Matcher) + Swift Testing suite. No C ABI, NIO target, RULE-SET/GEOIP/logic rules yet (see `PLAN.md` §8 milestones).
-- Commands: `swift build`, `swift test` (27 tests, Swift Testing framework, `@testable import ClashRuleCore`). Debug fixture helpers live at the top of `Tests/ClashRuleCoreTests/CoreTests.swift`.
+- **M1/M2/M3 rules implemented**: `Package.swift` + `ClashRuleCore` (Parser / Compiler / flat structures / Matcher / Logic rules / RULE-SET / GEOIP / PROCESS / NETWORK / DSCP) + Swift Testing suite. No C ABI or NIO target yet (see `PLAN.md` §8 milestones).
+- Commands: `swift build`, `swift test` (58 tests, Swift Testing framework, `@testable import ClashRuleCore`). Debug fixture helpers live at the top of `Tests/ClashRuleCoreTests/CoreTests.swift`.
 - Not committed blindly: run `swift test` before every commit; performance/RAM targets (§7) are CI-blocking once benchmarks land in M5.
 
 ## Toolchain reality check (verified on this machine)
