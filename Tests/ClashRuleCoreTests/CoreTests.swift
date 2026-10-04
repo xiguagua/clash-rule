@@ -30,7 +30,7 @@ private func matchDomain(
 
 // MARK: - Basic matching
 
-@Suite struct MatcherTests {
+@Suite(.serialized) struct MatcherTests {
     private let config = """
         # basic fixture
         DOMAIN,google.com,DIRECT
