@@ -53,9 +53,12 @@ struct RuleSink {
 
     mutating func commitLine() { nextRuleIndex &+= 1 }
 
+    var bounds = CategoryBounds()
+
     mutating func addExact(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minExactRule = min(bounds.minExactRule, ruleIndex)
         let key = lowerBytes(raw, r)
         if let old = exact[key], old.rule <= ruleIndex { return }
         exact[key] = (policyID, ruleIndex)
@@ -64,6 +67,7 @@ struct RuleSink {
     mutating func addSuffix(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minSuffixRule = min(bounds.minSuffixRule, ruleIndex)
         var labels: [[UInt8]] = []
         var labelStart = r.lowerBound
         for i in r where raw[i] == UInt8(ascii: ".") {
@@ -77,6 +81,7 @@ struct RuleSink {
     mutating func addKeyword(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minKeywordRule = min(bounds.minKeywordRule, ruleIndex)
         let key = lowerBytes(raw, r)
         keywords.append((key, policyID, ruleIndex))
     }
@@ -86,14 +91,18 @@ struct RuleSink {
     ) {
         if isSource {
             if isIPv6 {
+                bounds.minSrcIPv6Rule = min(bounds.minSrcIPv6Rule, ruleIndex)
                 srcIPv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             } else {
+                bounds.minSrcIPv4Rule = min(bounds.minSrcIPv4Rule, ruleIndex)
                 srcIPv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             }
         } else {
             if isIPv6 {
+                bounds.minIPv6Rule = min(bounds.minIPv6Rule, ruleIndex)
                 ipv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             } else {
+                bounds.minIPv4Rule = min(bounds.minIPv4Rule, ruleIndex)
                 ipv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             }
         }
@@ -102,6 +111,7 @@ struct RuleSink {
     mutating func addPort(
         _ intervals: [(low: UInt16, high: UInt16)], side: PortSide, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minPortRule = min(bounds.minPortRule, ruleIndex)
         for interval in intervals {
             let key = (UInt32(interval.low) << 16) | UInt32(interval.high)
             var slot = portMap[key] ?? PortSlot(low: interval.low, high: interval.high)
@@ -118,6 +128,7 @@ struct RuleSink {
     mutating func addProcessName(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minProcessNameRule = min(bounds.minProcessNameRule, ruleIndex)
         let key = lowerBytes(raw, r)
         if let old = processName[key], old.rule <= ruleIndex { return }
         processName[key] = (policyID, ruleIndex)
@@ -126,6 +137,7 @@ struct RuleSink {
     mutating func addProcessPath(
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minProcessPathRule = min(bounds.minProcessPathRule, ruleIndex)
         let key = lowerBytes(raw, r)
         if let old = processPath[key], old.rule <= ruleIndex { return }
         processPath[key] = (policyID, ruleIndex)
@@ -134,6 +146,7 @@ struct RuleSink {
     mutating func addNetwork(
         _ proto: NetworkProtocol, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minNetworkRule = min(bounds.minNetworkRule, ruleIndex)
         switch proto {
         case .tcp:
             if let current = tcpRule, current.rule <= ruleIndex { return }
@@ -147,6 +160,7 @@ struct RuleSink {
     mutating func addDSCP(
         _ value: UInt8, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minDscpRule = min(bounds.minDscpRule, ruleIndex)
         if let old = dscpMap[value], old.rule <= ruleIndex { return }
         dscpMap[value] = (policyID, ruleIndex)
     }
@@ -154,6 +168,7 @@ struct RuleSink {
     mutating func addGeoIP(
         _ code: UInt32, policyID: UInt16, ruleIndex: UInt32
     ) {
+        bounds.minGeoIPRule = min(bounds.minGeoIPRule, ruleIndex)
         if let old = geoIPMap[code], old.rule <= ruleIndex { return }
         geoIPMap[code] = (policyID, ruleIndex)
     }
@@ -184,6 +199,7 @@ struct RuleSink {
     }
 
     mutating func addLogicRule(rootNodeIndex: UInt32, policyID: UInt16, ruleIndex: UInt32) {
+        bounds.minLogicRule = min(bounds.minLogicRule, ruleIndex)
         logicRules.append(LogicRule(
             rootNodeIndex: rootNodeIndex,
             policyID: policyID,

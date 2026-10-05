@@ -120,3 +120,23 @@ struct LogicRule: BitwiseCopyable, Sendable {
     var _padding: UInt16 = 0
     var ruleIndex: UInt32 = 0
 }
+
+/// Earliest rule indices per category used for bounded short-circuit pruning.
+public struct CategoryBounds: BitwiseCopyable, Sendable {
+    public var minExactRule: UInt32 = UInt32.max
+    public var minSuffixRule: UInt32 = UInt32.max
+    public var minKeywordRule: UInt32 = UInt32.max
+    public var minIPv4Rule: UInt32 = UInt32.max
+    public var minIPv6Rule: UInt32 = UInt32.max
+    public var minSrcIPv4Rule: UInt32 = UInt32.max
+    public var minSrcIPv6Rule: UInt32 = UInt32.max
+    public var minPortRule: UInt32 = UInt32.max
+    public var minProcessNameRule: UInt32 = UInt32.max
+    public var minProcessPathRule: UInt32 = UInt32.max
+    public var minNetworkRule: UInt32 = UInt32.max
+    public var minDscpRule: UInt32 = UInt32.max
+    public var minGeoIPRule: UInt32 = UInt32.max
+    public var minLogicRule: UInt32 = UInt32.max
+
+    public init() {}
+}

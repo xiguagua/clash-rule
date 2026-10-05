@@ -58,48 +58,85 @@ public struct Matcher: Sendable {
             collector.consider(policy: rules.matchPolicy, rule: rules.matchRuleIndex)
         }
 
-        if context.domain.count > 0 {
+        let bounds = rules.bounds
+
+        // Tier 1: Fastest O(1) checks (~2–15 ns)
+        if context.domain.count > 0 && collector.bestRule > bounds.minExactRule {
             collector.consider(rules.lookupExactDomain(context.domain))
+            if collector.isOptimal { return collector.finish() }
+        }
+
+        if let dscp = context.dscp, collector.bestRule > bounds.minDscpRule {
+            collector.consider(rules.lookupDSCP(dscp))
+            if collector.isOptimal { return collector.finish() }
+        }
+
+        if let net = context.network, collector.bestRule > bounds.minNetworkRule {
+            collector.consider(rules.lookupNetwork(net))
+            if collector.isOptimal { return collector.finish() }
+        }
+
+        if collector.bestRule > bounds.minPortRule {
+            if context.targetPort != 0 {
+                collector.consider(rules.lookupPort(context.targetPort, isDestination: true))
+                if collector.isOptimal { return collector.finish() }
+            }
+            if context.sourcePort != 0 {
+                collector.consider(rules.lookupPort(context.sourcePort, isDestination: false))
+                if collector.isOptimal { return collector.finish() }
+            }
+        }
+
+        if context.processName.count > 0 && collector.bestRule > bounds.minProcessNameRule {
+            collector.consider(rules.lookupProcessName(context.processName))
+            if collector.isOptimal { return collector.finish() }
+        }
+
+        if context.processPath.count > 0 && collector.bestRule > bounds.minProcessPathRule {
+            collector.consider(rules.lookupProcessPath(context.processPath))
+            if collector.isOptimal { return collector.finish() }
+        }
+
+        if context.countryCode != 0 && collector.bestRule > bounds.minGeoIPRule {
+            collector.consider(rules.lookupGeoIP(context.countryCode))
+            if collector.isOptimal { return collector.finish() }
+        }
+
+        // Tier 2: Radix and Suffix Trie Traversals (~20–80 ns)
+        if context.domain.count > 0 && collector.bestRule > bounds.minSuffixRule {
             collector.consider(rules.lookupSuffix(context.domain))
-            collector.consider(rules.lookupKeyword(context.domain))
+            if collector.isOptimal { return collector.finish() }
         }
 
         if let address = context.targetAddress {
-            collector.consider(rules.lookupAddress(address))
+            let minIP = min(bounds.minIPv4Rule, bounds.minIPv6Rule)
+            if collector.bestRule > minIP {
+                collector.consider(rules.lookupAddress(address))
+                if collector.isOptimal { return collector.finish() }
+            }
         }
 
         if let srcAddress = context.sourceAddress {
-            collector.consider(rules.lookupSourceAddress(srcAddress))
+            let minSrcIP = min(bounds.minSrcIPv4Rule, bounds.minSrcIPv6Rule)
+            if collector.bestRule > minSrcIP {
+                collector.consider(rules.lookupSourceAddress(srcAddress))
+                if collector.isOptimal { return collector.finish() }
+            }
         }
 
-        collector.consider(rules.lookupPort(context.targetPort, isDestination: true))
-        collector.consider(rules.lookupPort(context.sourcePort, isDestination: false))
-
-        if context.processName.count > 0 {
-            collector.consider(rules.lookupProcessName(context.processName))
+        // Tier 3: Keyword Search (linear scan or future AC automaton)
+        if context.domain.count > 0 && collector.bestRule > bounds.minKeywordRule {
+            collector.consider(rules.lookupKeyword(context.domain))
+            if collector.isOptimal { return collector.finish() }
         }
 
-        if context.processPath.count > 0 {
-            collector.consider(rules.lookupProcessPath(context.processPath))
-        }
-
-        if let net = context.network {
-            collector.consider(rules.lookupNetwork(net))
-        }
-
-        if let dscp = context.dscp {
-            collector.consider(rules.lookupDSCP(dscp))
-        }
-
-        if context.countryCode != 0 {
-            collector.consider(rules.lookupGeoIP(context.countryCode))
-        }
-
-        if !rules.logicRules.isEmpty {
+        // Tier 4: Logic Rules
+        if !rules.logicRules.isEmpty && collector.bestRule > bounds.minLogicRule {
             for logicRule in rules.logicRules {
                 guard logicRule.ruleIndex < collector.bestRule else { break }
                 if rules.evalLogicNode(Int(logicRule.rootNodeIndex), context: context) {
                     collector.consider(policy: logicRule.policyID, rule: logicRule.ruleIndex)
+                    if collector.isOptimal { return collector.finish() }
                 }
             }
         }
@@ -180,6 +217,11 @@ struct CandidateCollector: BitwiseCopyable, Sendable {
         guard rule < bestRule else { return }
         bestRule = rule
         bestPolicy = policy
+    }
+
+    @inline(__always)
+    var isOptimal: Bool {
+        bestRule == 0
     }
 
     @inline(__always)
@@ -307,21 +349,19 @@ extension CompiledRules {
     }
 
     func lookupAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
-        // IPv4 is encoded in the low 32 bits. An all-zero high half is ambiguous,
-        // so both tries are consulted and the lowest rule index wins.
-        var best = (address >> 32 == 0) ? walkAddress(ipv4Nodes, address: address, startBit: 31) : nil
-        if let hit = walkAddress(ipv6Nodes, address: address, startBit: 127) {
-            if best == nil || hit.rule < best!.rule { best = hit }
+        if address >> 32 == 0 {
+            return walkIPv4Address(ipv4Nodes, address: UInt32(truncatingIfNeeded: address))
+        } else {
+            return walkAddress(ipv6Nodes, address: address, startBit: 127)
         }
-        return best
     }
 
     func lookupSourceAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
-        var best = (address >> 32 == 0) ? walkAddress(srcIPv4Nodes, address: address, startBit: 31) : nil
-        if let hit = walkAddress(srcIPv6Nodes, address: address, startBit: 127) {
-            if best == nil || hit.rule < best!.rule { best = hit }
+        if address >> 32 == 0 {
+            return walkIPv4Address(srcIPv4Nodes, address: UInt32(truncatingIfNeeded: address))
+        } else {
+            return walkAddress(srcIPv6Nodes, address: address, startBit: 127)
         }
-        return best
     }
 
     func lookupNetwork(_ net: NetworkProtocol) -> (policy: UInt16, rule: UInt32)? {
@@ -355,6 +395,28 @@ extension CompiledRules {
             }
         }
         return nil
+    }
+
+    private func walkIPv4Address(
+        _ nodes: ContiguousArray<IPNode>, address: UInt32
+    ) -> (policy: UInt16, rule: UInt32)? {
+        guard !nodes.isEmpty else { return nil }
+        var node = 0
+        var best: (policy: UInt16, rule: UInt32)? = nil
+        var bit = 31
+        while true {
+            let current = nodes[node]
+            if current.ruleIndex != IPNode.noRule {
+                if best == nil || current.ruleIndex < best!.rule { best = (current.policyID, current.ruleIndex) }
+            }
+            guard bit >= 0 else { break }
+            let isOne = ((address >> bit) & 1) == 1
+            let child = isOne ? current.right : current.left
+            guard child != IPNode.noChild else { break }
+            node = Int(child)
+            bit -= 1
+        }
+        return best
     }
 
     private func walkAddress(

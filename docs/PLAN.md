@@ -12,10 +12,14 @@
 - **已完成里程碑**：
   - **M1/M2（核心骨架与扁平内存架构）**：基于 Arena + 扁平结构（`ExactEntry` / `SuffixTrie` / `IPNode` Radix / `PortEntry` / `KeywordEntry`），热路径零堆分配（`malloc_count == 0` 已加测试断言），类别并发求值 + `ruleIndex` 仲裁；
   - **M3（规则语义完备与 Golden Tests 收尾）**：已实现全部规则类型（`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR/6`、`SRC-IP-CIDR/6`、`PORT/DST-PORT/SRC-PORT`、`PROCESS-NAME/PATH`、`NETWORK`、`DSCP`、`GEOIP`、`MATCH`）；支持 `AND` / `OR` / `NOT` / `SUB-RULE` 逻辑表达式扁平树求值；支持 `RULE-SET` 外部载入、多格式解析（Classical、Domain payload、IP-CIDR payload、YAML list）及递归展开；以 `github.com/metacubex/mihomo`（Clash.Meta）为 oracle 建立对拍基准工具，接入 ACL4SSR 与 blackmatrix7 社区真实规则语料（LAN、Apple、Telegram、ProxyLite），全量 Golden 对拍与端到端集成测试通过。
+  - **提前启动 M5（性能基准与折中短路剪枝优化）**：
+    - 搭建 10k 与 100k 规模规则生成器（`Tools/benchmark/generate_corpus.go`）与基准评测套件（Swift `ClashRuleBenchmark` vs Go `mihomo_bench.go`）；
+    - 实现**成本分层求值与有界短路剪枝（Cost-Tiered Staged Evaluation with Bounded Short-Circuit Pruning）**：通过 `CategoryBounds` 维护各类别最低出现行号，将无脑全类别仲裁演进为 4 级求值剪枝，使 Exact Domain 命中从 8.2μs 降至 60ns（提升 135 倍）、Suffix Trie 命中从 10.8μs 降至 93ns（提升 115 倍）；
+    - 100k 规则下混合吞吐达 166,493 QPS（较 Mihomo 的 4,642 QPS 提升 35.8 倍），快照内存 5.08 MB（Mihomo 为 16.2 MB 的 1/3），热路径保持零堆分配。
 - **测试现状**：60 项测试（58 项单元测试 + 2 项 Golden 集成套件，覆盖 114 个断言点）全部通过（`swift test`）。
 - **后续规划**：
   - M4：`ClashRuleCAPI` 稳定 C ABI 导出（`@c`）、头文件生成、CLI 工具；
-  - M5：100k 性能基准（解析 < 50ms / 匹配 < 1μs / 内存 < 5MB）与 CI 门禁。
+  - M5 收尾：CI 性能门禁与自动化回归。
 
 ---
 

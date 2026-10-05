@@ -13,10 +13,18 @@ let package = Package(
     ],
     products: [
         .library(name: "ClashRuleCore", targets: ["ClashRuleCore"]),
+        .executable(name: "ClashRuleBenchmark", targets: ["ClashRuleBenchmark"]),
     ],
     targets: [
         .target(
             name: "ClashRuleCore",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .executableTarget(
+            name: "ClashRuleBenchmark",
+            dependencies: ["ClashRuleCore"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

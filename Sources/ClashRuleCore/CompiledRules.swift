@@ -56,12 +56,40 @@ public struct CompiledRules: Sendable {
     var logicChildIndices: ContiguousArray<UInt32>
     var logicArena: ContiguousArray<UInt8>
 
-    // MATCH fallback
     var matchPolicy: UInt16
     var matchRuleIndex: UInt32
     var hasMatchRule: Bool
+    public var bounds: CategoryBounds
 
     public var ruleCount: Int
+
+    /// Total heap memory occupied by flat POD arrays and arenas in bytes.
+    public var approximateMemoryBytes: Int {
+        var total = 0
+        total += policyRangesArr.count * MemoryLayout<PolicyRange>.stride
+        total += policyArena.count
+        total += exactKeys.count
+        total += exactEntries.count * MemoryLayout<ExactEntry>.stride
+        total += trieLabels.count
+        total += trieNodes.count * MemoryLayout<SuffixTrieNode>.stride
+        total += trieChildIndices.count * MemoryLayout<UInt32>.stride
+        total += ipv4Nodes.count * MemoryLayout<IPNode>.stride
+        total += ipv6Nodes.count * MemoryLayout<IPNode>.stride
+        total += srcIPv4Nodes.count * MemoryLayout<IPNode>.stride
+        total += srcIPv6Nodes.count * MemoryLayout<IPNode>.stride
+        total += portEntries.count * MemoryLayout<PortEntry>.stride
+        total += keywordEntries.count * MemoryLayout<KeywordEntry>.stride
+        total += keywordArena.count
+        total += processNameKeys.count + processNameEntries.count * MemoryLayout<ExactEntry>.stride
+        total += processPathKeys.count + processPathEntries.count * MemoryLayout<ExactEntry>.stride
+        total += dscpTable.count * MemoryLayout<DscpEntry>.stride
+        total += geoIPEntries.count * MemoryLayout<GeoIPEntry>.stride
+        total += logicRules.count * MemoryLayout<LogicRule>.stride
+        total += logicNodes.count * MemoryLayout<LogicNode>.stride
+        total += logicChildIndices.count * MemoryLayout<UInt32>.stride
+        total += logicArena.count
+        return total
+    }
 
     /// Diagnostic convenience — allocates a `String`. Never use in the hot path.
     public func policyName(_ id: UInt16) -> String {
@@ -266,6 +294,7 @@ extension RuleSink {
             matchPolicy: matchRule?.policy ?? 0,
             matchRuleIndex: matchRule?.rule ?? 0,
             hasMatchRule: matchRule != nil,
+            bounds: bounds,
             ruleCount: Int(nextRuleIndex)
         )
     }

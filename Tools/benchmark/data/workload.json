@@ -1,0 +1,69 @@
+[
+  {
+    "name": "exact_hit",
+    "description": "Exact Domain Hash Lookup",
+    "domain": "exact-target.benchmark.test",
+    "expect_hit": true
+  },
+  {
+    "name": "suffix_hit",
+    "description": "Deep Suffix Trie Traversal (3 labels)",
+    "domain": "deep.api.suffix-target.benchmark.test",
+    "expect_hit": true
+  },
+  {
+    "name": "keyword_hit",
+    "description": "Domain Keyword Scan",
+    "domain": "prefix-keywordtarget-suffix.com",
+    "expect_hit": true
+  },
+  {
+    "name": "ipv4_cidr_hit",
+    "description": "IPv4 Radix Trie Prefix Match (/24)",
+    "target_ip": "198.51.100.42",
+    "expect_hit": true
+  },
+  {
+    "name": "ipv6_cidr_hit",
+    "description": "IPv6 Radix Trie Prefix Match (/48)",
+    "target_ip": "2001:db8:beef:1234::1",
+    "expect_hit": true
+  },
+  {
+    "name": "port_hit",
+    "description": "Destination Port Lookup",
+    "target_port": 8080,
+    "expect_hit": true
+  },
+  {
+    "name": "process_hit",
+    "description": "Process Name Lookup",
+    "process_name": "curl-bench",
+    "expect_hit": true
+  },
+  {
+    "name": "logic_and_hit",
+    "description": "Composite Logic AND Rule Evaluation",
+    "domain": "my.secure.bank",
+    "target_port": 443,
+    "network": "tcp",
+    "expect_hit": true
+  },
+  {
+    "name": "geoip_hit",
+    "description": "GeoIP Country Index Match",
+    "target_ip": "114.114.114.114",
+    "geoip": "CN",
+    "expect_hit": true
+  },
+  {
+    "name": "fallback_miss",
+    "description": "Full Category Miss -\u003e MATCH Fallback",
+    "domain": "unmatched-random-domain-xyz123.com",
+    "target_ip": "192.0.2.1",
+    "target_port": 9999,
+    "process_name": "unknown-proc",
+    "network": "udp",
+    "expect_hit": false
+  }
+]
