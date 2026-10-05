@@ -1,6 +1,6 @@
 /// Swift 便捷接口（非热路径，允许分配）。
 ///
-/// 核心 `RuleCompiler.compile(UnsafeRawBufferPointer)` / `Matcher.match(UnsafeBufferPointer)`
+/// 核心 `RuleCompiler.compile(RawSpan)` / `Matcher.match(domain: Span<UInt8>)`
 /// 是零分配热路径，调用繁琐是有意为之。本文件只做薄封装：
 /// String/Data -> 字节 -> 调用核心，方便业务层直接使用。
 
@@ -130,7 +130,7 @@ extension Matcher {
     /// let policy2: String? = matcher.policy(forIP: "10.1.2.3", port: 443)
     /// ```
     /// - Note: 每次调用会有一次 UTF-8 转字节分配。超高频场景请复用
-    ///   `[UInt8]` 缓冲 + `match(domain: UnsafeBufferPointer...)` 热路径重载。
+    ///   `[UInt8]` 缓冲并直接调用 `match(domain: buffer.span)` 热路径接口。
     public func policy(
         forDomain domain: String = "",
         targetIP: String? = nil,
