@@ -77,14 +77,12 @@ public struct Matcher: Sendable {
         }
 
         if collector.bestRule > bounds.minPortRule {
-            if context.targetPort != 0 {
-                collector.consider(rules.lookupPort(context.targetPort, isDestination: true))
-                if collector.isOptimal { return collector.finish() }
-            }
-            if context.sourcePort != 0 {
-                collector.consider(rules.lookupPort(context.sourcePort, isDestination: false))
-                if collector.isOptimal { return collector.finish() }
-            }
+            // 与 mihomo 对齐：端口 0 是普通端口值，无特殊跳过。
+            // mihomo Port.Match 直接做区间匹配，未指定端口 (0) 可命中 DST-PORT,0。
+            collector.consider(rules.lookupPort(context.targetPort, isDestination: true))
+            if collector.isOptimal { return collector.finish() }
+            collector.consider(rules.lookupPort(context.sourcePort, isDestination: false))
+            if collector.isOptimal { return collector.finish() }
         }
 
         if context.processName.count > 0 && collector.bestRule > bounds.minProcessNameRule {
@@ -349,8 +347,17 @@ extension CompiledRules {
     }
 
     func lookupAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
+        // IPv4 编码在低 32 位，高位全零时与 IPv6 ::/96 段地址歧义，
+        // 双 trie 都查、取最小 ruleIndex（与 mihomo 语义对齐的保守处理）。
         if address >> 32 == 0 {
-            return walkIPv4Address(ipv4Nodes, address: UInt32(truncatingIfNeeded: address))
+            let v4 = walkIPv4Address(ipv4Nodes, address: UInt32(truncatingIfNeeded: address))
+            let v6 = walkAddress(ipv6Nodes, address: address, startBit: 127)
+            switch (v4, v6) {
+            case let (a?, b?): return a.rule < b.rule ? a : b
+            case let (a?, nil): return a
+            case let (nil, b?): return b
+            case (nil, nil): return nil
+            }
         } else {
             return walkAddress(ipv6Nodes, address: address, startBit: 127)
         }
@@ -358,7 +365,14 @@ extension CompiledRules {
 
     func lookupSourceAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
         if address >> 32 == 0 {
-            return walkIPv4Address(srcIPv4Nodes, address: UInt32(truncatingIfNeeded: address))
+            let v4 = walkIPv4Address(srcIPv4Nodes, address: UInt32(truncatingIfNeeded: address))
+            let v6 = walkAddress(srcIPv6Nodes, address: address, startBit: 127)
+            switch (v4, v6) {
+            case let (a?, b?): return a.rule < b.rule ? a : b
+            case let (a?, nil): return a
+            case let (nil, b?): return b
+            case (nil, nil): return nil
+            }
         } else {
             return walkAddress(srcIPv6Nodes, address: address, startBit: 127)
         }

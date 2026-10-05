@@ -113,14 +113,16 @@ private func loadFixtureData(relativePath: String) throws -> Data {
                 // When mihomo evaluated these, default policy was PROXY for telegram/proxylite, DIRECT for lan/apple
                 let defaultPolicy = ruleSetPath.contains("telegram") || ruleSetPath.contains("proxylite") ? "PROXY" : "DIRECT"
                 let rootConfig = "RULE-SET,payload_list,\(defaultPolicy)\n"
-                compiledRules = try rootConfig.utf8.withContiguousStorageIfAvailable { rootBuf in
+                // Array 保底连续存储：withContiguousStorageIfAvailable 可能返回 nil
+                let rootBytes = Array(rootConfig.utf8)
+                compiledRules = try rootBytes.withUnsafeBufferPointer { rootBuf in
                     try ruleData.withUnsafeBytes { listBuf in
                         try RuleCompiler.compile(
                             UnsafeRawBufferPointer(rootBuf),
                             ruleSets: ["payload_list": listBuf]
                         )
                     }
-                }!
+                }
             } else {
                 compiledRules = try ruleData.withUnsafeBytes { raw in
                     try RuleCompiler.compile(raw)
@@ -207,7 +209,8 @@ private func loadFixtureData(relativePath: String) throws -> Data {
         MATCH,FINAL-FALLBACK
         """
 
-        let compiled = try configText.utf8.withContiguousStorageIfAvailable { cfgBuf in
+        let configBytes = Array(configText.utf8)
+        let compiled = try configBytes.withUnsafeBufferPointer { cfgBuf in
             try lanData.withUnsafeBytes { lanBuf in
                 try appleData.withUnsafeBytes { appleBuf in
                     try telegramData.withUnsafeBytes { tgBuf in
@@ -225,7 +228,7 @@ private func loadFixtureData(relativePath: String) throws -> Data {
                     }
                 }
             }
-        }!
+        }
 
         let matcher = Matcher(compiled)
 

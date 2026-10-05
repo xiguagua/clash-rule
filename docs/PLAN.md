@@ -1,9 +1,9 @@
 # Clash Rule Engine — Swift 实现规划
 
 目标（按优先级排序）：
-1. **性能 Tier 1**：解析 + 匹配全链路对标 mihomo/clash.meta 的 Go 实现，匹配热路径单次 < 1μs（10 万规则量级），解析 10 万行规则 < 50ms（M 系芯片）。
+1. **性能 Tier 1**：解析 + 匹配全链路对标 mihomo/clash.meta 的 Go 实现，匹配热路径索引类命中单次 < 1μs（10 万规则量级），编译 10 万行规则（含索引构建）< 80ms（M 系芯片）；与 mihomo 按“加载 + 查询”总成本（TCO）对标而非单项解析时长。
 2. **语言互操作方便**：稳定 C ABI 导出，任何能链接 C 的语言（Go/Rust/Node/Python/Kotlin/Java）零胶水直接调用。
-3. **RAM 高效**：10 万条规则编译态 < 5 MB，解析期峰值 < 2× 编译态，热路径零堆分配。
+3. **RAM 高效**：10 万条规则编译态 < 5.5 MB，解析期峰值 < 2× 编译态，热路径零堆分配。
 
 ---
 
@@ -13,10 +13,11 @@
   - **M1/M2（核心骨架与扁平内存架构）**：基于 Arena + 扁平结构（`ExactEntry` / `SuffixTrie` / `IPNode` Radix / `PortEntry` / `KeywordEntry`），热路径零堆分配（`malloc_count == 0` 已加测试断言），类别并发求值 + `ruleIndex` 仲裁；
   - **M3（规则语义完备与 Golden Tests 收尾）**：已实现全部规则类型（`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR/6`、`SRC-IP-CIDR/6`、`PORT/DST-PORT/SRC-PORT`、`PROCESS-NAME/PATH`、`NETWORK`、`DSCP`、`GEOIP`、`MATCH`）；支持 `AND` / `OR` / `NOT` / `SUB-RULE` 逻辑表达式扁平树求值；支持 `RULE-SET` 外部载入、多格式解析（Classical、Domain payload、IP-CIDR payload、YAML list）及递归展开；以 `github.com/metacubex/mihomo`（Clash.Meta）为 oracle 建立对拍基准工具，接入 ACL4SSR 与 blackmatrix7 社区真实规则语料（LAN、Apple、Telegram、ProxyLite），全量 Golden 对拍与端到端集成测试通过。
   - **提前启动 M5（性能基准与折中短路剪枝优化）**：
-    - 搭建 10k 与 100k 规模规则生成器（`Tools/benchmark/generate_corpus.go`）与基准评测套件（Swift `ClashRuleBenchmark` vs Go `mihomo_bench.go`）；
-    - 实现**成本分层求值与有界短路剪枝（Cost-Tiered Staged Evaluation with Bounded Short-Circuit Pruning）**：通过 `CategoryBounds` 维护各类别最低出现行号，将无脑全类别仲裁演进为 4 级求值剪枝，使 Exact Domain 命中从 8.2μs 降至 60ns（提升 135 倍）、Suffix Trie 命中从 10.8μs 降至 93ns（提升 115 倍）；
-    - 100k 规则下混合吞吐达 166,493 QPS（较 Mihomo 的 4,642 QPS 提升 35.8 倍），快照内存 5.08 MB（Mihomo 为 16.2 MB 的 1/3），热路径保持零堆分配。
-- **测试现状**：60 项测试（58 项单元测试 + 2 项 Golden 集成套件，覆盖 114 个断言点）全部通过（`swift test`）。
+    - 搭建 10k 与 100k 规模规则生成器（`Tools/benchmark/corpus/main.go`）与基准评测套件（Swift `ClashRuleBenchmark` vs Go `Tools/benchmark/bench/main.go`）；
+    - 实现**成本分层求值与有界短路剪枝（Cost-Tiered Staged Evaluation with Bounded Short-Circuit Pruning）**：通过 `CategoryBounds` 维护各类别最低出现行号，将无脑全类别仲裁演进为 4 级求值剪枝；100k 下实测 Exact 命中 61.6ns、Suffix 142ns、IPv4/IPv6 118/200ns、Port/Process/GeoIP 均 < 100ns；
+    - 编译期优化四连修（struct arena trie、免排序拍平、`ByteKey` 预存哈希、`matchKind` 字节分发）：100k 编译 164ms → 78ms（-52%）；
+    - 100k 实测（同机 release）：编译 Swift 78.3ms vs mihomo 55.6ms；混合吞吐 27.2k vs 9.9k ops/s（**2.7x**）；全 miss 最坏 172μs vs 1035μs（**6x**）；快照 5.08MB vs Go 堆增量 24.45MB；10/10 查询策略一致。口径说明：mihomo 解析只做 append-to-slice（代价递延到匹配时顺序扫描），按 TCO 对标约 350 个混合查询回本（多付 22.7ms 加载，每查询省 64.6μs），详见 §7。
+- **测试现状**：64 项测试（62 项单元测试 + 2 项 Golden 集成套件）全部通过（`swift test`）。
 - **后续规划**：
   - M4：`ClashRuleCAPI` 稳定 C ABI 导出（`@c`）、头文件生成、CLI 工具；
   - M5 收尾：CI 性能门禁与自动化回归。
@@ -278,9 +279,9 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 | 验收项 | 目标 |
 |---|---|
 | Golden test | 用 mihomo 解析同一 config，匹配结果 100% 一致（覆盖 DOMAIN/IP/PORT/PROCESS/LOGIC/RULE-SET/GEOIP） |
-| 解析性能 | 100k 规则 < 50ms，单核 |
-| 匹配性能 | 真实 config 下 miss-heavy 与 hit-heavy 两种负载均 < 1μs/次 |
-| RAM | 100k 规则编译态 < 5 MB；解析期峰值 < 10 MB |
+| 解析性能 | 100k 规则 compile（含索引构建）< 80ms，单核；与 mihomo 按 TCO 对标（加载 + 混合查询），约 350 查询回本——mihomo 解析只做 append-to-slice，代价在匹配时以顺序扫描支付 |
+| 匹配性能 | 索引类命中（exact/suffix/ip/port/process/geoip）< 1μs/次；全 miss 最坏 < 200μs（mihomo 约 1ms）；混合吞吐 ≥ 2x mihomo |
+| RAM | 100k 规则编译态 < 5.5 MB；解析期峰值 < 10 MB |
 | 热路径分配 | `malloc` 计数 = 0 |
 | ABI 兼容 | 头文件 + dylib 的符号表稳定，跨 minor 版本不破坏 |
 

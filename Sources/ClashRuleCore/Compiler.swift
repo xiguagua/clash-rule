@@ -2,25 +2,72 @@
 /// Swift collections are fine here — heap allocation is allowed before the
 /// snapshot freezes), then flattens everything into an immutable
 /// `CompiledRules` snapshot (docs/PLAN.md §2).
+/// Build-phase dictionary key: bytes plus precomputed FNV-1a.
+///
+/// `fnv1a` lowercases internally (Bytes.swift), so hashing already-lowered
+/// bytes here yields values identical to query-time `fnv1a(raw)` — table
+/// placement in `buildOpenAddressing` stays consistent with
+/// `lookupOpenAddressing`. The custom `hash(into:)` makes every dictionary
+/// operation O(1) in hashing instead of routing through the generic `Hasher`
+/// byte-by-byte path for each lookup.
+struct ByteKey: Hashable {
+    var bytes: [UInt8]
+    var hash: UInt64
+
+    init(_ bytes: [UInt8]) {
+        self.bytes = bytes
+        self.hash = fnv1a(bytes)
+    }
+
+    init(bytes: [UInt8], hash: UInt64) {
+        self.bytes = bytes
+        self.hash = hash
+    }
+
+    @inline(__always)
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bytes == rhs.bytes
+    }
+
+    @inline(__always)
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(hash)
+    }
+}
+
+/// Lowercase + FNV-1a in a single pass (hash covers the lowered bytes,
+/// same algorithm as `fnv1a` in Bytes.swift).
+private func lowerKey(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> ByteKey {
+    var out = [UInt8]()
+    out.reserveCapacity(r.count)
+    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    for i in r {
+        let b = lowerByte(raw[i])
+        out.append(b)
+        h = (h ^ UInt64(b)) &* 0x100000001b3
+    }
+    return ByteKey(bytes: out, hash: h)
+}
+
 struct RuleSink {
     private(set) var nextRuleIndex: UInt32 = 0
 
     // Policy interning
-    private var policyKeys: [[UInt8]: UInt16] = [:]
+    private var policyKeys: [ByteKey: UInt16] = [:]
     var policyArena = ByteArena()
     private(set) var policyRanges: [PolicyRange] = []
 
     // Collectors
-    var exact: [[UInt8]: (policy: UInt16, rule: UInt32)] = [:]
+    var exact: [ByteKey: (policy: UInt16, rule: UInt32)] = [:]
     var keywords: [(key: [UInt8], policy: UInt16, rule: UInt32)] = []
-    let trie = SuffixTrieBuilder()
+    var trie = SuffixTrieBuilder()
     var ipv4 = IPNodeBuilder(bitWidth: 32)
     var ipv6 = IPNodeBuilder(bitWidth: 128)
     var srcIPv4 = IPNodeBuilder(bitWidth: 32)
     var srcIPv6 = IPNodeBuilder(bitWidth: 128)
     var portMap: [UInt32: PortSlot] = [:]
-    var processName: [[UInt8]: (policy: UInt16, rule: UInt32)] = [:]
-    var processPath: [[UInt8]: (policy: UInt16, rule: UInt32)] = [:]
+    var processName: [ByteKey: (policy: UInt16, rule: UInt32)] = [:]
+    var processPath: [ByteKey: (policy: UInt16, rule: UInt32)] = [:]
     var tcpRule: (policy: UInt16, rule: UInt32)?
     var udpRule: (policy: UInt16, rule: UInt32)?
     var dscpMap: [UInt8: (policy: UInt16, rule: UInt32)] = [:]
@@ -39,7 +86,7 @@ struct RuleSink {
         guard !r.isEmpty else {
             throw RuleParseError(.invalidArgument, line: line, column: r.lowerBound - base + 1, "empty policy name")
         }
-        let key = [UInt8](raw[r])
+        let key = ByteKey([UInt8](raw[r]))
         if let id = policyKeys[key] { return id }
         guard policyRanges.count < 65536 else {
             throw RuleParseError(.policyTableFull, line: line, column: 1, "more than 65536 distinct policy names")
@@ -59,7 +106,7 @@ struct RuleSink {
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minExactRule = min(bounds.minExactRule, ruleIndex)
-        let key = lowerBytes(raw, r)
+        let key = lowerKey(raw, r)
         if let old = exact[key], old.rule <= ruleIndex { return }
         exact[key] = (policyID, ruleIndex)
     }
@@ -68,14 +115,7 @@ struct RuleSink {
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minSuffixRule = min(bounds.minSuffixRule, ruleIndex)
-        var labels: [[UInt8]] = []
-        var labelStart = r.lowerBound
-        for i in r where raw[i] == UInt8(ascii: ".") {
-            labels.append(lowerBytes(raw, labelStart..<i))
-            labelStart = i + 1
-        }
-        labels.append(lowerBytes(raw, labelStart..<r.upperBound))
-        trie.addSuffix(labels: labels, policy: policyID, rule: ruleIndex)
+        trie.addSuffix(domain: raw, range: r, policy: policyID, rule: ruleIndex)
     }
 
     mutating func addKeyword(
@@ -129,7 +169,7 @@ struct RuleSink {
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minProcessNameRule = min(bounds.minProcessNameRule, ruleIndex)
-        let key = lowerBytes(raw, r)
+        let key = lowerKey(raw, r)
         if let old = processName[key], old.rule <= ruleIndex { return }
         processName[key] = (policyID, ruleIndex)
     }
@@ -138,7 +178,7 @@ struct RuleSink {
         _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minProcessPathRule = min(bounds.minProcessPathRule, ruleIndex)
-        let key = lowerBytes(raw, r)
+        let key = lowerKey(raw, r)
         if let old = processPath[key], old.rule <= ruleIndex { return }
         processPath[key] = (policyID, ruleIndex)
     }
@@ -217,30 +257,41 @@ struct RuleSink {
 
 // MARK: - Build-phase index builders
 
-/// Reversed-label suffix trie under construction.
-final class SuffixTrieBuilder {
-    final class Node {
-        var children: [[UInt8]: Node] = [:]
-        var label: [UInt8] = []
+/// Reversed-label suffix trie under construction. Struct + index arena
+/// (root at index 0): no classes, so no ARC traffic and no
+/// `ObjectIdentifier` mapping at freeze time — flat indices are reused as-is.
+struct SuffixTrieBuilder {
+    struct BuildNode {
+        var children: [ByteKey: UInt32] = [:]
+        var label: ByteKey = ByteKey([])
         var terminal: (policy: UInt16, rule: UInt32)?
     }
 
-    private(set) var root = Node()
+    private(set) var nodes: [BuildNode] = [BuildNode()]
 
-    func addSuffix(labels: [[UInt8]], policy: UInt16, rule: UInt32) {
-        var node = root
-        for label in labels.reversed() {
-            if let next = node.children[label] {
-                node = next
+    mutating func addSuffix(domain raw: UnsafeRawBufferPointer, range r: Range<Int>, policy: UInt16, rule: UInt32) {
+        // Walk labels right-to-left (TLD first) with no intermediate arrays.
+        // Callers pass validated domains, so labels are non-empty; the walk
+        // mirrors left-to-right splitting exactly even for invalid input.
+        var node = 0
+        var end = r.upperBound
+        while true {
+            var start = end
+            while start > r.lowerBound && raw[start - 1] != UInt8(ascii: ".") { start -= 1 }
+            let key = lowerKey(raw, start..<end)
+            if let next = nodes[node].children[key] {
+                node = Int(next)
             } else {
-                let child = Node()
-                child.label = label
-                node.children[label] = child
-                node = child
+                let child = UInt32(nodes.count)
+                nodes[node].children[key] = child
+                nodes.append(BuildNode(label: key))
+                node = Int(child)
             }
+            if start == r.lowerBound { break }
+            end = start - 1
         }
-        if let current = node.terminal, current.rule <= rule { return }
-        node.terminal = (policy, rule)
+        if let current = nodes[node].terminal, current.rule <= rule { return }
+        nodes[node].terminal = (policy, rule)
     }
 }
 

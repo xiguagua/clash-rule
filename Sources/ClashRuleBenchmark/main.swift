@@ -69,6 +69,11 @@ private func parseCountryCode(_ str: String) -> UInt32 {
     return code
 }
 
+private func durationNanoseconds(_ d: Duration) -> Double {
+    let c = d.components
+    return Double(c.seconds) * 1e9 + Double(c.attoseconds) / 1e9
+}
+
 func main() throws {
     var rulePath = "Tools/benchmark/data/bench_100k.rules"
     var workloadPath = "Tools/benchmark/data/workload.json"
@@ -123,7 +128,7 @@ func main() throws {
         fatalError("Compilation failed")
     }
 
-    let totalParseNs = parseDurations.reduce(0) { $0 + Double($1.components.attoseconds) / 1e9 }
+    let totalParseNs = parseDurations.reduce(0) { $0 + durationNanoseconds($1) }
     let meanParseMs = (totalParseNs / Double(parseRuns)) / 1e6
 
     // Calculate in-memory snapshot size:
@@ -227,7 +232,7 @@ func main() throws {
             }
         }
         let matchElapsed = clock.now - matchStart
-        let elapsedNs = Double(matchElapsed.components.attoseconds) / 1e9
+        let elapsedNs = durationNanoseconds(matchElapsed)
         let nsPerOp = elapsedNs / Double(iters)
 
         queryResults.append(QueryResult(
@@ -267,7 +272,7 @@ func main() throws {
         }
     }
     let mixedElapsed = clock.now - mixedStart
-    let mixedElapsedNs = Double(mixedElapsed.components.attoseconds) / 1e9
+    let mixedElapsedNs = durationNanoseconds(mixedElapsed)
     let mixedNsPerOp = mixedElapsedNs / Double(mixedIters)
     let mixedOpsPerS = Double(mixedIters) / (mixedElapsedNs / 1e9)
 

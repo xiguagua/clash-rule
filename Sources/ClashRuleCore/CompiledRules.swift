@@ -59,7 +59,7 @@ public struct CompiledRules: Sendable {
     var matchPolicy: UInt16
     var matchRuleIndex: UInt32
     var hasMatchRule: Bool
-    public var bounds: CategoryBounds
+    public private(set) var bounds: CategoryBounds
 
     public var ruleCount: Int
 
@@ -110,7 +110,7 @@ extension RuleSink {
 
         // Open-addressing hash table builder for exact domain, process name, and process path.
         func buildOpenAddressing(
-            _ map: [[UInt8]: (policy: UInt16, rule: UInt32)]
+            _ map: [ByteKey: (policy: UInt16, rule: UInt32)]
         ) -> (keys: ContiguousArray<UInt8>, entries: ContiguousArray<ExactEntry>, mask: UInt32) {
             var arena = ByteArena()
             var entryArray = ContiguousArray<ExactEntry>()
@@ -119,17 +119,18 @@ extension RuleSink {
                 let capacity = Self.nextPow2(max(16, map.count * 2))
                 mask = UInt32(capacity - 1)
                 entryArray = ContiguousArray(repeating: ExactEntry(), count: capacity)
-                for key in map.keys.sorted(by: lexLess) {
+                for key in map.keys.sorted(by: { lexLess($0.bytes, $1.bytes) }) {
                     let slot = map[key]!
-                    let keyOffset = arena.append(key)
-                    let hash = fnv1a(key)
+                    let keyOffset = arena.append(key.bytes)
+                    // Same FNV-1a-over-lowered-bytes as query-time `fnv1a(raw)`.
+                    let hash = key.hash
                     var position = Int(hash & UInt64(mask))
                     while entryArray[position].keyLength != 0 {
                         position = (position + 1) & Int(mask)
                     }
                     entryArray[position] = ExactEntry(
                         keyOffset: keyOffset,
-                        keyLength: UInt16(key.count),
+                        keyLength: UInt16(key.bytes.count),
                         policyID: slot.policy,
                         ruleIndex: slot.rule
                     )
@@ -142,48 +143,57 @@ extension RuleSink {
         let processNameTable = buildOpenAddressing(processName)
         let processPathTable = buildOpenAddressing(processPath)
 
-        // Suffix trie flatten (two passes: label nodes first, then link children —
-        // contiguity of each node's child block must not interleave with recursion).
+        // Suffix trie flatten: builder nodes are already arena-indexed
+        // (root == 0), so flat indices are reused as-is — no `ObjectIdentifier`
+        // map, no recursion. Two linear passes: labels first, then link each
+        // node's consecutively-stored child block.
         var trieLabelsArena = ByteArena()
         var trieNodeArray = ContiguousArray<SuffixTrieNode>()
         var trieChildArray = ContiguousArray<UInt32>()
-        var nodeIndexMap: [ObjectIdentifier: UInt32] = [:]
+        let buildNodes = trie.nodes
+        trieNodeArray.reserveCapacity(buildNodes.count)
+        var totalChildren = 0
+        for build in buildNodes { totalChildren += build.children.count }
+        trieChildArray.reserveCapacity(totalChildren)
 
-        // Pass 1: assign indices and store labels.
-        func assign(_ node: SuffixTrieBuilder.Node) -> UInt32 {
-            let labelOffset = trieLabelsArena.append(node.label)
-            let index = UInt32(trieNodeArray.count)
-            nodeIndexMap[ObjectIdentifier(node)] = index
-            let terminal = node.terminal
+        // Pass 1: store labels (flat index == builder index).
+        for build in buildNodes {
+            let labelOffset = trieLabelsArena.append(build.label.bytes)
+            let terminal = build.terminal
             trieNodeArray.append(SuffixTrieNode(
                 firstChildEntry: 0,
                 childCount: 0,
                 isTerminal: terminal != nil,
                 labelOffset: labelOffset,
-                labelLength: UInt16(node.label.count),
+                labelLength: UInt16(build.label.bytes.count),
                 policyID: terminal?.policy ?? 0,
                 ruleIndex: terminal?.rule ?? 0
             ))
-            for child in node.children.values { _ = assign(child) }
-            return index
         }
 
         // Pass 2: link child blocks (each node's entries are appended consecutively).
-        func link(_ node: SuffixTrieBuilder.Node) {
-            let index = Int(nodeIndexMap[ObjectIdentifier(node)]!)
+        // Child order is irrelevant to lookup (linear scan), sorting exists only
+        // for deterministic snapshots. Single-child nodes (the common case) skip
+        // sorting entirely; multi-child nodes sort (label, child) pairs once with
+        // a reused scratch buffer — no per-node allocation, no second hash lookup.
+        var scratch: [(key: ByteKey, value: UInt32)] = []
+        scratch.reserveCapacity(256)
+        for index in 0..<buildNodes.count {
+            let build = buildNodes[index]
             let firstChildEntry = UInt32(trieChildArray.count)
-            var childCount = 0
-            for labelKey in node.children.keys.sorted(by: lexLess) {
-                trieChildArray.append(nodeIndexMap[ObjectIdentifier(node.children[labelKey]!)]!)
-                childCount += 1
+            if build.children.count <= 1 {
+                for child in build.children.values { trieChildArray.append(child) }
+            } else {
+                scratch.removeAll(keepingCapacity: true)
+                scratch.append(contentsOf: build.children)
+                scratch.sort { lexLess($0.key.bytes, $1.key.bytes) }
+                for pair in scratch { trieChildArray.append(pair.value) }
             }
             trieNodeArray[index].firstChildEntry = firstChildEntry
-            trieNodeArray[index].childCount = UInt16(childCount)
-            for child in node.children.values { link(child) }
+            trieNodeArray[index].childCount = UInt16(build.children.count)
         }
 
-        let trieRootIndex = assign(trie.root)
-        link(trie.root)
+        let trieRootIndex: UInt32 = 0
 
         // IP tries.
         func flattenIPNodes(_ builder: IPNodeBuilder) -> ContiguousArray<IPNode> {

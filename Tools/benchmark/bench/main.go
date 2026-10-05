@@ -52,6 +52,38 @@ type BenchmarkReport struct {
 	MixedOpsPerS  float64       `json:"mixed_ops_per_s"`
 }
 
+func splitRuleParts(s string) []string {
+	// 与 golden-oracle 一致：括号内的逗号不切分（AND/OR/NOT 逻辑规则）
+	var parts []string
+	var cur strings.Builder
+	depth := 0
+	for _, c := range s {
+		switch c {
+		case '(':
+			depth++
+			cur.WriteRune(c)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(c)
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(cur.String()))
+				cur.Reset()
+			} else {
+				cur.WriteRune(c)
+			}
+		default:
+			cur.WriteRune(c)
+		}
+	}
+	if cur.Len() > 0 {
+		parts = append(parts, strings.TrimSpace(cur.String()))
+	}
+	return parts
+}
+
 func parseRuleLine(line string) (constant.Rule, error) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
@@ -60,7 +92,7 @@ func parseRuleLine(line string) (constant.Rule, error) {
 	if strings.HasPrefix(trimmed, "- ") {
 		trimmed = strings.TrimSpace(trimmed[2:])
 	}
-	parts := strings.Split(trimmed, ",")
+	parts := splitRuleParts(trimmed)
 	if len(parts) == 0 {
 		return nil, nil
 	}
@@ -155,7 +187,10 @@ func main() {
 
 	// Warmup parse
 	for _, l := range lines {
-		r, _ := parseRuleLine(l)
+		r, err := parseRuleLine(l)
+		if err != nil {
+			panic(fmt.Sprintf("parse rule line %q: %v", l, err))
+		}
 		if r != nil {
 			parsedRules = append(parsedRules, r)
 		}
@@ -171,7 +206,10 @@ func main() {
 		start := time.Now()
 		var curRules []constant.Rule
 		for _, l := range lines {
-			r, _ := parseRuleLine(l)
+			r, err := parseRuleLine(l)
+			if err != nil {
+				panic(fmt.Sprintf("parse rule line %q: %v", l, err))
+			}
 			if r != nil {
 				curRules = append(curRules, r)
 			}

@@ -142,6 +142,32 @@ private func matchDomain(
         #expect(rules.policyName(match(matcher, domain: "", targetPort: 81)!.policyID) == "Final")
     }
 
+    @Test func portZeroMatchesLikeMihomo() throws {
+        // mihomo Port.Match 无 0 守卫：未指定端口 (0) 可命中 DST-PORT,0。
+        let rules = try compile("DST-PORT,0,ZeroPort\nMATCH,Final\n")
+        let matcher = Matcher(rules)
+        #expect(rules.policyName(match(matcher, domain: "", targetPort: 0)!.policyID) == "ZeroPort")
+        let srcRules = try compile("SRC-PORT,0,ZeroSrc\nMATCH,Final\n")
+        let srcMatcher = Matcher(srcRules)
+        #expect(srcRules.policyName(match(srcMatcher, domain: "", sourcePort: 0)!.policyID) == "ZeroSrc")
+    }
+
+    @Test func ambiguousLowAddressConsultsBothTries() throws {
+        // UInt128(1) 既是 0.0.0.1 也是 ::1：高位全零时双 trie 都查。
+        let v6Only = try compile("IP-CIDR6,::/0,V6All\nMATCH,Final\n")
+        let v6Matcher = Matcher(v6Only)
+        #expect(v6Only.policyName(match(v6Matcher, domain: "", address: UInt128(1))!.policyID) == "V6All")
+    }
+
+    @Test func dualStackSameValueLowestRuleWins() throws {
+        let v4First = try compile("IP-CIDR,0.0.0.1/32,V4Host\nIP-CIDR6,::1/128,V6Host\nMATCH,Final\n")
+        let m1 = Matcher(v4First)
+        #expect(v4First.policyName(match(m1, domain: "", address: UInt128(1))!.policyID) == "V4Host")
+        let v6First = try compile("IP-CIDR6,::1/128,V6Host\nIP-CIDR,0.0.0.1/32,V4Host\nMATCH,Final\n")
+        let m2 = Matcher(v6First)
+        #expect(v6First.policyName(match(m2, domain: "", address: UInt128(1))!.policyID) == "V6Host")
+    }
+
     @Test func matchFallbackOnlyWhenNothingElseMatches() throws {
         let (_, matcher) = try make()
         #expect(rules_name(matcher, match(matcher, domain: "google.com")!) == "DIRECT")
@@ -918,6 +944,12 @@ private func matchDomain(
 
     @Test func unknownRuleType() {
         expectError("UNKNOWN-TYPE,myset,DIRECT\n", .unknownRuleType, line: 1)
+    }
+
+    @Test func ipAsnUnsupported() {
+        // IP-ASN 需 MMDB，当前不支持：显式锁死为 unknownRuleType。
+        // 社区 fixture 已剔除 IP-ASN 行（如 telegram.list 头部注明的 5 条）。
+        expectError("IP-ASN,1234,DIRECT\n", .unknownRuleType, line: 1)
     }
 
     @Test func unknownRuleSet() {

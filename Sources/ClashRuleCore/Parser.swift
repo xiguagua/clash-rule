@@ -7,34 +7,83 @@
 /// M1 parses: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6,
 /// PORT, DST-PORT, SRC-PORT, MATCH. Unknown types fail fast (docs/PLAN.md §6).
 struct RuleParser {
-    private static let kindTable: [[UInt8]: RuleKind] = {
-        var table: [[UInt8]: RuleKind] = [:]
-        func add(_ name: String, _ kind: RuleKind) {
-            table[[UInt8](name.uppercased().utf8)] = kind
+    // Rule-type literals as byte arrays (initialized once). `matchKind` compares
+    // caller bytes case-insensitively against these without materializing or
+    // hashing a per-line key — the old `kindTable` paid an `[UInt8]` alloc +
+    // generic-hash lookup on every line.
+    private static let kOR: [UInt8] = Array("OR".utf8)
+    private static let kAND: [UInt8] = Array("AND".utf8)
+    private static let kNOT: [UInt8] = Array("NOT".utf8)
+    private static let kPORT: [UInt8] = Array("PORT".utf8)
+    private static let kDSCP: [UInt8] = Array("DSCP".utf8)
+    private static let kMATCH: [UInt8] = Array("MATCH".utf8)
+    private static let kGEOIP: [UInt8] = Array("GEOIP".utf8)
+    private static let kDOMAIN: [UInt8] = Array("DOMAIN".utf8)
+    private static let kNETWORK: [UInt8] = Array("NETWORK".utf8)
+    private static let kIPCIDR: [UInt8] = Array("IP-CIDR".utf8)
+    private static let kDSTPORT: [UInt8] = Array("DST-PORT".utf8)
+    private static let kSRCPORT: [UInt8] = Array("SRC-PORT".utf8)
+    private static let kRULESET: [UInt8] = Array("RULE-SET".utf8)
+    private static let kSUBRULE: [UInt8] = Array("SUB-RULE".utf8)
+    private static let kIPCIDR6: [UInt8] = Array("IP-CIDR6".utf8)
+    private static let kSRCIPCIDR: [UInt8] = Array("SRC-IP-CIDR".utf8)
+    private static let kPROCESSNAME: [UInt8] = Array("PROCESS-NAME".utf8)
+    private static let kPROCESSPATH: [UInt8] = Array("PROCESS-PATH".utf8)
+    private static let kSRCIPCIDR6: [UInt8] = Array("SRC-IP-CIDR6".utf8)
+    private static let kDOMAINSUFFIX: [UInt8] = Array("DOMAIN-SUFFIX".utf8)
+    private static let kDOMAINKEYWORD: [UInt8] = Array("DOMAIN-KEYWORD".utf8)
+
+    @inline(__always)
+    private static func eqKind(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>, _ lit: [UInt8]) -> Bool {
+        guard r.count == lit.count else { return false }
+        var i = r.lowerBound
+        for b in lit {
+            if upperByte(raw[i]) != b { return false }
+            i += 1
         }
-        add("DOMAIN", .domain)
-        add("DOMAIN-SUFFIX", .domainSuffix)
-        add("DOMAIN-KEYWORD", .domainKeyword)
-        add("IP-CIDR", .ipCIDR(isIPv6: false))
-        add("IP-CIDR6", .ipCIDR(isIPv6: true))
-        add("SRC-IP-CIDR", .srcIPCIDR(isIPv6: false))
-        add("SRC-IP-CIDR6", .srcIPCIDR(isIPv6: true))
-        add("PORT", .port(.either))
-        add("DST-PORT", .port(.destination))
-        add("SRC-PORT", .port(.source))
-        add("PROCESS-NAME", .processName)
-        add("PROCESS-PATH", .processPath)
-        add("NETWORK", .network)
-        add("DSCP", .dscp)
-        add("GEOIP", .geoIP)
-        add("AND", .and)
-        add("OR", .or)
-        add("NOT", .not)
-        add("SUB-RULE", .subRule)
-        add("RULE-SET", .ruleSet)
-        add("MATCH", .match)
-        return table
-    }()
+        return true
+    }
+
+    /// Case-insensitive rule-type dispatch without allocation or hashing.
+    private static func matchKind(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> RuleKind? {
+        switch r.count {
+        case 2:
+            if eqKind(raw, r, kOR) { return .or }
+        case 3:
+            if eqKind(raw, r, kAND) { return .and }
+            if eqKind(raw, r, kNOT) { return .not }
+        case 4:
+            if eqKind(raw, r, kPORT) { return .port(.either) }
+            if eqKind(raw, r, kDSCP) { return .dscp }
+        case 5:
+            if eqKind(raw, r, kMATCH) { return .match }
+            if eqKind(raw, r, kGEOIP) { return .geoIP }
+        case 6:
+            if eqKind(raw, r, kDOMAIN) { return .domain }
+        case 7:
+            if eqKind(raw, r, kNETWORK) { return .network }
+            if eqKind(raw, r, kIPCIDR) { return .ipCIDR(isIPv6: false) }
+        case 8:
+            if eqKind(raw, r, kDSTPORT) { return .port(.destination) }
+            if eqKind(raw, r, kSRCPORT) { return .port(.source) }
+            if eqKind(raw, r, kRULESET) { return .ruleSet }
+            if eqKind(raw, r, kSUBRULE) { return .subRule }
+            if eqKind(raw, r, kIPCIDR6) { return .ipCIDR(isIPv6: true) }
+        case 11:
+            if eqKind(raw, r, kSRCIPCIDR) { return .srcIPCIDR(isIPv6: false) }
+        case 12:
+            if eqKind(raw, r, kPROCESSNAME) { return .processName }
+            if eqKind(raw, r, kPROCESSPATH) { return .processPath }
+            if eqKind(raw, r, kSRCIPCIDR6) { return .srcIPCIDR(isIPv6: true) }
+        case 13:
+            if eqKind(raw, r, kDOMAINSUFFIX) { return .domainSuffix }
+        case 14:
+            if eqKind(raw, r, kDOMAINKEYWORD) { return .domainKeyword }
+        default:
+            break
+        }
+        return nil
+    }
 
     static func parse(
         _ input: UnsafeRawBufferPointer,
@@ -105,14 +154,11 @@ struct RuleParser {
             cursor = comma + 1
         }
 
-        // Rule type name (case-insensitive).
-        var typeName = [UInt8]()
-        typeName.reserveCapacity(segments[0].count)
-        for i in segments[0] { typeName.append(upperByte(raw[i])) }
-        guard let kind = kindTable[typeName] else {
+        // Rule type name (case-insensitive, no allocation).
+        guard let kind = matchKind(raw, segments[0]) else {
             throw RuleParseError(
                 .unknownRuleType, line: line, column: 1,
-                "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))'"
+                "unsupported rule type '\(String(decoding: [UInt8](raw[segments[0]]), as: UTF8.self))'"
             )
         }
 
@@ -365,11 +411,7 @@ struct RuleParser {
         }
         if segments.isEmpty || segments[0].isEmpty { return }
 
-        var typeName = [UInt8]()
-        typeName.reserveCapacity(segments[0].count)
-        for i in segments[0] { typeName.append(upperByte(raw[i])) }
-
-        if let kind = kindTable[typeName] {
+        if let kind = matchKind(raw, segments[0]) {
             guard segments.count >= 2, !segments[1].isEmpty else {
                 throw RuleParseError(.malformedLine, line: line, column: 1, "expected TYPE,ARG in rule-set")
             }
@@ -488,7 +530,7 @@ struct RuleParser {
             guard segments.count == 1 else {
                 throw RuleParseError(
                     .unknownRuleType, line: line, column: 1,
-                    "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))'"
+                    "unsupported rule type '\(String(decoding: [UInt8](raw[segments[0]]), as: UTF8.self))'"
                 )
             }
             let token = segments[0]
@@ -925,13 +967,10 @@ struct RuleParser {
             throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (TYPE,ARG) condition")
         }
 
-        var typeName = [UInt8]()
-        typeName.reserveCapacity(parts[0].count)
-        for i in parts[0] { typeName.append(upperByte(raw[i])) }
-        guard let kind = kindTable[typeName] else {
+        guard let kind = matchKind(raw, parts[0]) else {
             throw RuleParseError(
                 .unknownRuleType, line: line, column: parts[0].lowerBound - base + 1,
-                "unsupported rule type '\(String(decoding: typeName, as: UTF8.self))' in condition"
+                "unsupported rule type '\(String(decoding: [UInt8](raw[parts[0]]), as: UTF8.self))' in condition"
             )
         }
 
@@ -1019,7 +1058,7 @@ struct RuleParser {
             let code = try parseGeoIP(raw, arg, line: line, base: base)
             return sink.addLogicNode(LogicNode(op: LogicOp.geoIP.rawValue, countryCode: code))
         case .subRule, .match, .ruleSet:
-            throw RuleParseError(.malformedLine, line: line, column: parts[0].lowerBound - base + 1, "cannot nest \(String(decoding: typeName, as: UTF8.self)) inside condition")
+            throw RuleParseError(.malformedLine, line: line, column: parts[0].lowerBound - base + 1, "cannot nest \(String(decoding: [UInt8](raw[parts[0]]), as: UTF8.self)) inside condition")
         }
     }
 
