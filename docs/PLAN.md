@@ -11,10 +11,9 @@
 
 - **已完成里程碑**：
   - **M1/M2（核心骨架与扁平内存架构）**：基于 Arena + 扁平结构（`ExactEntry` / `SuffixTrie` / `IPNode` Radix / `PortEntry` / `KeywordEntry`），热路径零堆分配（`malloc_count == 0` 已加测试断言），类别并发求值 + `ruleIndex` 仲裁；
-  - **M3（规则语义完备）**：已实现全部规则类型（`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR/6`、`SRC-IP-CIDR/6`、`PORT/DST-PORT/SRC-PORT`、`PROCESS-NAME/PATH`、`NETWORK`、`DSCP`、`GEOIP`、`MATCH`）；支持 `AND` / `OR` / `NOT` / `SUB-RULE` 逻辑表达式扁平树求值；支持 `RULE-SET` 外部载入、多格式解析（Classical、Domain payload、IP-CIDR payload、YAML list）及递归展开。
-- **测试现状**：58 项单元测试全部通过（运行耗时 ~0.013s，`swift test`）。
+  - **M3（规则语义完备与 Golden Tests 收尾）**：已实现全部规则类型（`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR/6`、`SRC-IP-CIDR/6`、`PORT/DST-PORT/SRC-PORT`、`PROCESS-NAME/PATH`、`NETWORK`、`DSCP`、`GEOIP`、`MATCH`）；支持 `AND` / `OR` / `NOT` / `SUB-RULE` 逻辑表达式扁平树求值；支持 `RULE-SET` 外部载入、多格式解析（Classical、Domain payload、IP-CIDR payload、YAML list）及递归展开；以 `github.com/metacubex/mihomo`（Clash.Meta）为 oracle 建立对拍基准工具，接入 ACL4SSR 与 blackmatrix7 社区真实规则语料（LAN、Apple、Telegram、ProxyLite），全量 Golden 对拍与端到端集成测试通过。
+- **测试现状**：60 项测试（58 项单元测试 + 2 项 Golden 集成套件，覆盖 114 个断言点）全部通过（`swift test`）。
 - **后续规划**：
-  - M3 收尾：mihomo 真实社区语料对拍 Golden tests；
   - M4：`ClashRuleCAPI` 稳定 C ABI 导出（`@c`）、头文件生成、CLI 工具；
   - M5：100k 性能基准（解析 < 50ms / 匹配 < 1μs / 内存 < 5MB）与 CI 门禁。
 

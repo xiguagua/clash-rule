@@ -28,5 +28,15 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .testTarget(
+            name: "GoldenTests",
+            dependencies: ["ClashRuleCore"],
+            resources: [
+                .copy("Fixtures"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
     ]
 )

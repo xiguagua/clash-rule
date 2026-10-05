@@ -1,0 +1,741 @@
+[
+  {
+    "id": "synthetic_1",
+    "description": "Exact domain matches APPLE-DIRECT",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "exact.apple.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "APPLE-DIRECT",
+      "rule_type": "Domain"
+    }
+  },
+  {
+    "id": "synthetic_2",
+    "description": "Subdomain of exact domain does not match exact rule",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "sub.exact.apple.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "synthetic_3",
+    "description": "Exact domain case insensitivity",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "EXACT.APPLE.COM"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "APPLE-DIRECT",
+      "rule_type": "Domain"
+    }
+  },
+  {
+    "id": "synthetic_4",
+    "description": "Domain suffix match apex google.com",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "google.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "GOOGLE-PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "synthetic_5",
+    "description": "Domain suffix match subdomain mail.google.com",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "mail.google.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "GOOGLE-PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "synthetic_6",
+    "description": "Domain suffix deep subdomain a.b.c.google.com",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "a.b.c.google.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "GOOGLE-PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "synthetic_7",
+    "description": "Domain suffix boundary check: notgoogle.com should not match google.com",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "notgoogle.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "synthetic_8",
+    "description": "Domain keyword facebook in mid domain",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "my-facebook-feed.org"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "FB-PROXY",
+      "rule_type": "DomainKeyword"
+    }
+  },
+  {
+    "id": "synthetic_9",
+    "description": "Domain keyword case insensitivity",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "Static.FaceBook.Net"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "FB-PROXY",
+      "rule_type": "DomainKeyword"
+    }
+  },
+  {
+    "id": "synthetic_10",
+    "description": "IPv4 CIDR match 192.168.1.50 -\u003e PRIVATE-LAN",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "192.168.1.50"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PRIVATE-LAN",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_11",
+    "description": "IPv4 CIDR /32 single host match 1.1.1.1 -\u003e CLOUDFLARE-DNS",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "1.1.1.1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "CLOUDFLARE-DNS",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_12",
+    "description": "IPv4 CIDR file order priority: 10.1.2.5 matches 10.0.0.0/8 before 10.1.2.0/24",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "10.1.2.5"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "CORP-VPN",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_13",
+    "description": "IPv4 CIDR non-matching IP falls through to MATCH",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "8.8.8.8"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "synthetic_14",
+    "description": "IPv6 CIDR /32 match 2001:db8:ffff::1 -\u003e IPV6-TEST",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "2001:db8:ffff::1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "IPV6-TEST",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_15",
+    "description": "IPv6 CIDR non-matching host falls through",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "2400:cb00::1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "synthetic_16",
+    "description": "Source IP CIDR match 172.16.5.10 -\u003e SRC-MGMT",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "source_ip": "172.16.5.10"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "SRC-MGMT",
+      "rule_type": "SrcIPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_17",
+    "description": "Source IPv6 CIDR match fd00::1234 -\u003e SRC-ULA",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "source_ip": "fd00::1234"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "SRC-ULA",
+      "rule_type": "SrcIPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_18",
+    "description": "Destination port 80 -\u003e HTTP-TRAFFIC",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_port": 80
+    },
+    "expected": {
+      "matched": true,
+      "policy": "HTTP-TRAFFIC",
+      "rule_type": "DstPort"
+    }
+  },
+  {
+    "id": "synthetic_19",
+    "description": "Destination port 8080 -\u003e HTTP-PROXY",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_port": 8080
+    },
+    "expected": {
+      "matched": true,
+      "policy": "HTTP-PROXY",
+      "rule_type": "DstPort"
+    }
+  },
+  {
+    "id": "synthetic_20",
+    "description": "Source port 68 -\u003e DHCP-BOOTP",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "source_port": 68
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DHCP-BOOTP",
+      "rule_type": "SrcPort"
+    }
+  },
+  {
+    "id": "synthetic_21",
+    "description": "Port 22 -\u003e SSH-DIRECT",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_port": 22
+    },
+    "expected": {
+      "matched": true,
+      "policy": "SSH-DIRECT",
+      "rule_type": "DstPort"
+    }
+  },
+  {
+    "id": "synthetic_22",
+    "description": "Process name curl -\u003e CLI-PROXY",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "process_name": "curl"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "CLI-PROXY",
+      "rule_type": "ProcessName"
+    }
+  },
+  {
+    "id": "synthetic_23",
+    "description": "Process path /usr/local/bin/wget -\u003e WGET-POLICY",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "process_path": "/usr/local/bin/wget"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "WGET-POLICY",
+      "rule_type": "ProcessPath"
+    }
+  },
+  {
+    "id": "synthetic_24",
+    "description": "Network udp -\u003e UDP-MEDIA",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "network": "udp"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "UDP-MEDIA",
+      "rule_type": "Network"
+    }
+  },
+  {
+    "id": "synthetic_25",
+    "description": "DSCP 46 -\u003e VOIP-EXPEDITED",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "dscp": 46
+    },
+    "expected": {
+      "matched": true,
+      "policy": "VOIP-EXPEDITED",
+      "rule_type": "DSCP"
+    }
+  },
+  {
+    "id": "synthetic_26",
+    "description": "GeoIP CN -\u003e DIRECT",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "223.5.5.5",
+      "geoip": "CN"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "GeoIP"
+    }
+  },
+  {
+    "id": "synthetic_27",
+    "description": "GeoIP JP -\u003e JP-PROXY",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "133.1.1.1",
+      "geoip": "JP"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "JP-PROXY",
+      "rule_type": "GeoIP"
+    }
+  },
+  {
+    "id": "synthetic_28",
+    "description": "AND rule satisfied: tcp + 443 + banking.com",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "my.banking.com",
+      "target_port": 443,
+      "network": "tcp"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "SECURE-BANKING",
+      "rule_type": "AND"
+    }
+  },
+  {
+    "id": "synthetic_29",
+    "description": "AND rule partially satisfied (missing port 443) does not match AND rule",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "my.banking.com",
+      "target_port": 8081,
+      "network": "tcp"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "synthetic_30",
+    "description": "OR rule satisfied by first item service1.local",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "service1.local"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "LOCAL-SERVICE",
+      "rule_type": "OR"
+    }
+  },
+  {
+    "id": "synthetic_31",
+    "description": "OR rule satisfied by second item service2.local",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "service2.local"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "LOCAL-SERVICE",
+      "rule_type": "OR"
+    }
+  },
+  {
+    "id": "synthetic_32",
+    "description": "NOT rule satisfied when not blocked.org",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "free-site.org"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "synthetic_33",
+    "description": "Domain rule beats lower port rule even when port matches",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "mail.google.com",
+      "target_port": 80
+    },
+    "expected": {
+      "matched": true,
+      "policy": "GOOGLE-PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "synthetic_34",
+    "description": "IP rule beats later process rule",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "target_ip": "192.168.1.10",
+      "process_name": "curl"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PRIVATE-LAN",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "synthetic_35",
+    "description": "Fallback MATCH triggered when nothing else matches",
+    "rule_set": "oracle/synthetic_oracle.rules",
+    "request": {
+      "domain": "random-unmatched-domain.xyz",
+      "target_ip": "185.199.108.153",
+      "target_port": 9999,
+      "network": "tcp"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "ALLOWED-CONTENT",
+      "rule_type": "NOT"
+    }
+  },
+  {
+    "id": "telegram_1",
+    "description": "Telegram exact domain api.imem.app",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "domain": "api.imem.app"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "Domain"
+    }
+  },
+  {
+    "id": "telegram_2",
+    "description": "Telegram suffix t.me",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "domain": "t.me"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "telegram_3",
+    "description": "Telegram suffix subdomain web.telegram.org",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "domain": "web.telegram.org"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "telegram_4",
+    "description": "Telegram keyword nicegram",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "domain": "app.nicegram.xyz"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainKeyword"
+    }
+  },
+  {
+    "id": "telegram_5",
+    "description": "Telegram IPv4 CIDR 91.108.4.1",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "target_ip": "91.108.4.1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "telegram_6",
+    "description": "Telegram IPv6 CIDR 2001:67c:4e8::5",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "target_ip": "2001:67c:4e8::5"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "telegram_7",
+    "description": "Telegram process name Telegram.exe",
+    "rule_set": "community/blackmatrix7_telegram.list",
+    "request": {
+      "process_name": "Telegram.exe"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "ProcessName"
+    }
+  },
+  {
+    "id": "apple_1",
+    "description": "Apple exact domain icons.axm-usercontent-apple.com",
+    "rule_set": "community/blackmatrix7_apple.list",
+    "request": {
+      "domain": "icons.axm-usercontent-apple.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "Domain"
+    }
+  },
+  {
+    "id": "apple_2",
+    "description": "Apple suffix apple.com",
+    "rule_set": "community/blackmatrix7_apple.list",
+    "request": {
+      "domain": "store.apple.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "apple_3",
+    "description": "Apple suffix icloud.com",
+    "rule_set": "community/blackmatrix7_apple.list",
+    "request": {
+      "domain": "www.icloud.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "apple_4",
+    "description": "Apple suffix aaplimg.com",
+    "rule_set": "community/blackmatrix7_apple.list",
+    "request": {
+      "domain": "images.aaplimg.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "acl_lan_1",
+    "description": "ACL LAN suffix localhost",
+    "rule_set": "community/acl4ssr_lan.list",
+    "request": {
+      "domain": "localhost"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "acl_lan_2",
+    "description": "ACL LAN suffix ip6-localhost",
+    "rule_set": "community/acl4ssr_lan.list",
+    "request": {
+      "domain": "ip6-localhost"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "acl_lan_3",
+    "description": "ACL LAN IPv4 10.0.0.1 in 10.0.0.0/8",
+    "rule_set": "community/acl4ssr_lan.list",
+    "request": {
+      "target_ip": "10.0.0.1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "acl_lan_4",
+    "description": "ACL LAN IPv4 192.168.1.1 in 192.168.0.0/16",
+    "rule_set": "community/acl4ssr_lan.list",
+    "request": {
+      "target_ip": "192.168.1.1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "acl_lan_5",
+    "description": "ACL LAN IPv4 172.20.0.1 in 172.16.0.0/12",
+    "rule_set": "community/acl4ssr_lan.list",
+    "request": {
+      "target_ip": "172.20.0.1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "acl_lan_6",
+    "description": "ACL LAN IPv4 127.0.0.1 in 127.0.0.0/8",
+    "rule_set": "community/acl4ssr_lan.list",
+    "request": {
+      "target_ip": "127.0.0.1"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "DIRECT",
+      "rule_type": "IPCIDR"
+    }
+  },
+  {
+    "id": "acl_proxy_1",
+    "description": "ACL ProxyLite suffix 1password.com",
+    "rule_set": "community/acl4ssr_proxylite.list",
+    "request": {
+      "domain": "my.1password.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "acl_proxy_2",
+    "description": "ACL ProxyLite suffix reddit.com",
+    "rule_set": "community/acl4ssr_proxylite.list",
+    "request": {
+      "domain": "old.reddit.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "acl_proxy_3",
+    "description": "ACL ProxyLite suffix notion.so",
+    "rule_set": "community/acl4ssr_proxylite.list",
+    "request": {
+      "domain": "www.notion.so"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  },
+  {
+    "id": "acl_proxy_4",
+    "description": "ACL ProxyLite suffix linkedin.com",
+    "rule_set": "community/acl4ssr_proxylite.list",
+    "request": {
+      "domain": "api.linkedin.com"
+    },
+    "expected": {
+      "matched": true,
+      "policy": "PROXY",
+      "rule_type": "DomainSuffix"
+    }
+  }
+]
