@@ -318,8 +318,20 @@ extension RuleSink {
 
 /// Public compile entry point.
 public enum RuleCompiler {
-    /// Resolves an external rule-set by name into a buffer of raw UTF-8 bytes.
-    public typealias RuleSetResolver = (UnsafeBufferPointer<UInt8>) -> UnsafeRawBufferPointer?
+    /// 按名字解析外部 `RULE-SET`，以借用方式把规则集原始 UTF-8 字节交给解析器。
+    ///
+    /// 调用约定（解析器会校验，违反时抛 `.invalidRuleSetResolver`）：
+    /// - 找到规则集：**恰好调用一次** `body(bytes)`，然后返回 `true`；
+    /// - 未找到：**不调用** `body`，返回 `false`（解析器抛 `.unknownRuleSet`）；
+    /// - 宿主加载失败：抛 `RuleParseError.ruleSetLoadFailed(_:)`，解析器会回填行列号；
+    /// - `body` 抛出的错误（规则集内容的解析错误）必须原样向外传播，不得吞掉或替换。
+    ///
+    /// `bytes` 仅在 `body` 调用期间需要有效；解析器不会保留它。
+    /// 嵌套 `RULE-SET` 会在 `body` 内部重入同一个 resolver。
+    public typealias RuleSetResolver = (
+        _ name: Span<UInt8>,
+        _ body: (Span<UInt8>) throws(RuleParseError) -> Void
+    ) throws(RuleParseError) -> Bool
 
     /// Parses UTF-8 rule text and compiles it into an immutable snapshot.
     ///
@@ -328,47 +340,26 @@ public enum RuleCompiler {
     ///   - ruleSetResolver: optional callback resolving external RULE-SET references.
     /// - Throws: `RuleParseError` (typed) with 1-based line/column on failure.
     public static func compile(
-        _ input: UnsafeRawBufferPointer,
+        _ input: RawSpan,
         ruleSetResolver: RuleSetResolver? = nil
     ) throws(RuleParseError) -> CompiledRules {
         var sink = RuleSink()
-        try RuleParser.parse(input, ruleSetResolver: ruleSetResolver, into: &sink)
+        try RuleParser.parse(Span(viewing: input), ruleSetResolver: ruleSetResolver, into: &sink)
         return sink.finish()
-    }
-
-    /// Convenience overload taking an in-memory dictionary of rule-set raw buffers.
-    public static func compile(
-        _ input: UnsafeRawBufferPointer,
-        ruleSets: [String: UnsafeRawBufferPointer]
-    ) throws(RuleParseError) -> CompiledRules {
-        var byteMap: [[UInt8]: UnsafeRawBufferPointer] = [:]
-        byteMap.reserveCapacity(ruleSets.count)
-        for (k, v) in ruleSets {
-            byteMap[[UInt8](k.utf8)] = v
-        }
-        return try compile(input) { nameBuf in
-            byteMap[[UInt8](nameBuf)]
-        }
     }
 
     /// Convenience overload taking an in-memory dictionary of rule-set strings.
     public static func compile(
-        _ input: UnsafeRawBufferPointer,
+        _ input: RawSpan,
         ruleSets: [String: String]
     ) throws(RuleParseError) -> CompiledRules {
-        var byteMap: [[UInt8]: [UInt8]] = [:]
-        byteMap.reserveCapacity(ruleSets.count)
-        for (k, v) in ruleSets {
-            byteMap[[UInt8](k.utf8)] = [UInt8](v.utf8)
-        }
-        var sink = RuleSink()
-        try RuleParser.parse(input, byteRuleSets: byteMap, into: &sink)
-        return sink.finish()
+        let byteSets = ruleSets.mapValues { Array($0.utf8) }
+        return try compile(input, ruleSets: byteSets)
     }
 
     /// Convenience overload taking an in-memory dictionary of byte-array rule sets.
     public static func compile(
-        _ input: UnsafeRawBufferPointer,
+        _ input: RawSpan,
         ruleSets: [String: [UInt8]]
     ) throws(RuleParseError) -> CompiledRules {
         var byteMap: [[UInt8]: [UInt8]] = [:]
@@ -377,19 +368,7 @@ public enum RuleCompiler {
             byteMap[[UInt8](k.utf8)] = v
         }
         var sink = RuleSink()
-        try RuleParser.parse(input, byteRuleSets: byteMap, into: &sink)
+        try RuleParser.parse(Span(viewing: input), byteRuleSets: byteMap, into: &sink)
         return sink.finish()
-    }
-
-    /// Span-based entry (SE-0447) — the preferred zero-copy API where the host
-    /// can construct a `RawSpan` (convenience properties need macOS 26+ / iOS 26+).
-    @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
-    public static func compile(
-        _ input: RawSpan,
-        ruleSetResolver: RuleSetResolver? = nil
-    ) throws(RuleParseError) -> CompiledRules {
-        try input.withUnsafeBytes { (raw: UnsafeRawBufferPointer) throws(RuleParseError) in
-            try compile(raw, ruleSetResolver: ruleSetResolver)
-        }
     }
 }

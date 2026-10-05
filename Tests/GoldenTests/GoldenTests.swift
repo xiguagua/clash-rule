@@ -113,20 +113,13 @@ private func loadFixtureData(relativePath: String) throws -> Data {
                 // When mihomo evaluated these, default policy was PROXY for telegram/proxylite, DIRECT for lan/apple
                 let defaultPolicy = ruleSetPath.contains("telegram") || ruleSetPath.contains("proxylite") ? "PROXY" : "DIRECT"
                 let rootConfig = "RULE-SET,payload_list,\(defaultPolicy)\n"
-                // Array 保底连续存储：withContiguousStorageIfAvailable 可能返回 nil
                 let rootBytes = Array(rootConfig.utf8)
-                compiledRules = try rootBytes.withUnsafeBufferPointer { rootBuf in
-                    try ruleData.withUnsafeBytes { listBuf in
-                        try RuleCompiler.compile(
-                            UnsafeRawBufferPointer(rootBuf),
-                            ruleSets: ["payload_list": listBuf]
-                        )
-                    }
-                }
+                compiledRules = try RuleCompiler.compile(
+                    rootBytes.span.bytes,
+                    ruleSets: ["payload_list": [UInt8](ruleData)]
+                )
             } else {
-                compiledRules = try ruleData.withUnsafeBytes { raw in
-                    try RuleCompiler.compile(raw)
-                }
+                compiledRules = try RuleCompiler.compile(ruleData.bytes)
             }
 
             let matcher = Matcher(compiledRules)
@@ -148,25 +141,18 @@ private func loadFixtureData(relativePath: String) throws -> Data {
                 let sourceAddr = tc.request.source_ip.flatMap(parseIP)
                 let country = tc.request.geoip.map(parseCountryCode) ?? 0
 
-                let matchedResult = domainBytes.withUnsafeBufferPointer { dBuf in
-                    procNameBytes.withUnsafeBufferPointer { pnBuf in
-                        procPathBytes.withUnsafeBufferPointer { ppBuf in
-                            let ctx = MatchContext(
-                                domain: dBuf,
-                                targetAddress: targetAddr,
-                                targetPort: tc.request.target_port ?? 0,
-                                sourceAddress: sourceAddr,
-                                sourcePort: tc.request.source_port ?? 0,
-                                processName: pnBuf,
-                                processPath: ppBuf,
-                                network: netProto,
-                                dscp: tc.request.dscp,
-                                countryCode: country
-                            )
-                            return matcher.match(context: ctx)
-                        }
-                    }
-                }
+                let matchedResult = matcher.match(
+                    domain: domainBytes.span,
+                    targetAddress: targetAddr,
+                    targetPort: tc.request.target_port ?? 0,
+                    sourceAddress: sourceAddr,
+                    sourcePort: tc.request.source_port ?? 0,
+                    processName: procNameBytes.span,
+                    processPath: procPathBytes.span,
+                    network: netProto,
+                    dscp: tc.request.dscp,
+                    countryCode: country
+                )
 
                 if tc.expected.matched {
                     #expect(
@@ -210,25 +196,15 @@ private func loadFixtureData(relativePath: String) throws -> Data {
         """
 
         let configBytes = Array(configText.utf8)
-        let compiled = try configBytes.withUnsafeBufferPointer { cfgBuf in
-            try lanData.withUnsafeBytes { lanBuf in
-                try appleData.withUnsafeBytes { appleBuf in
-                    try telegramData.withUnsafeBytes { tgBuf in
-                        try proxyLiteData.withUnsafeBytes { plBuf in
-                            try RuleCompiler.compile(
-                                UnsafeRawBufferPointer(cfgBuf),
-                                ruleSets: [
-                                    "lan": lanBuf,
-                                    "apple": appleBuf,
-                                    "telegram": tgBuf,
-                                    "proxylite": plBuf,
-                                ]
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        let compiled = try RuleCompiler.compile(
+            configBytes.span.bytes,
+            ruleSets: [
+                "lan": [UInt8](lanData),
+                "apple": [UInt8](appleData),
+                "telegram": [UInt8](telegramData),
+                "proxylite": [UInt8](proxyLiteData),
+            ]
+        )
 
         let matcher = Matcher(compiled)
 
@@ -242,25 +218,16 @@ private func loadFixtureData(relativePath: String) throws -> Data {
         ) {
             let dBytes = [UInt8]((domain ?? "").utf8)
             let pBytes = [UInt8]((proc ?? "").utf8)
-            let emptyBytes = [UInt8]()
             let ipAddr = ip.flatMap(parseIP)
             let country = geoip.map(parseCountryCode) ?? 0
 
-            let res = dBytes.withUnsafeBufferPointer { dBuf in
-                pBytes.withUnsafeBufferPointer { pBuf in
-                    emptyBytes.withUnsafeBufferPointer { eBuf in
-                        let ctx = MatchContext(
-                            domain: dBuf,
-                            targetAddress: ipAddr,
-                            targetPort: port,
-                            processName: pBuf,
-                            processPath: eBuf,
-                            countryCode: country
-                        )
-                        return matcher.match(context: ctx)
-                    }
-                }
-            }
+            let res = matcher.match(
+                domain: dBytes.span,
+                targetAddress: ipAddr,
+                targetPort: port,
+                processName: pBytes.span,
+                countryCode: country
+            )
 
             #expect(res != nil, "Expected match for domain=\(domain ?? "-"), ip=\(ip ?? "-")")
             if let r = res {

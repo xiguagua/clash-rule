@@ -12,12 +12,16 @@
 - **已完成里程碑**：
   - **M1/M2（核心骨架与扁平内存架构）**：基于 Arena + 扁平结构（`ExactEntry` / `SuffixTrie` / `IPNode` Radix / `PortEntry` / `KeywordEntry`），热路径零堆分配（`malloc_count == 0` 已加测试断言），类别并发求值 + `ruleIndex` 仲裁；
   - **M3（规则语义完备与 Golden Tests 收尾）**：已实现全部规则类型（`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR/6`、`SRC-IP-CIDR/6`、`PORT/DST-PORT/SRC-PORT`、`PROCESS-NAME/PATH`、`NETWORK`、`DSCP`、`GEOIP`、`MATCH`）；支持 `AND` / `OR` / `NOT` / `SUB-RULE` 逻辑表达式扁平树求值；支持 `RULE-SET` 外部载入、多格式解析（Classical、Domain payload、IP-CIDR payload、YAML list）及递归展开；以 `github.com/metacubex/mihomo`（Clash.Meta）为 oracle 建立对拍基准工具，接入 ACL4SSR 与 blackmatrix7 社区真实规则语料（LAN、Apple、Telegram、ProxyLite），全量 Golden 对拍与端到端集成测试通过。
+  - **Swift 6.4+ 现代化演进（无向后兼容，全面转向 Span）**：
+    - 运行与开发环境全面切至最新 Swift 6.4+ 基线（目标平台 macOS 27 / iOS 27 / tvOS 27 / watchOS 27 / visionOS 27），彻底移除所有向后兼容 fallback 与 `@available` 守卫分支；
+    - Parser、Compiler 与 Matcher 全链路以 `Span<UInt8>` / `RawSpan` 为主要入参和操作视图，最大程度消除 unsafe 类的 API（彻底移除旧的 `UnsafeBufferPointer` / `UnsafeRawBufferPointer` 重载及兼容层）；
+    - `RuleSetResolver` 改为闭包借用式 `(name: Span<UInt8>, body: (Span<UInt8>) throws(RuleParseError) -> Void) throws(RuleParseError) -> Bool`：规则集字节仅在 `body` 调用期间借用，解析器不持有。调用约定由解析器强制校验——找到时恰好调用一次 `body` 并返回 `true`，未找到时不调用并返回 `false`；违约抛 `.invalidRuleSetResolver`，宿主加载失败通过 `RuleParseError.ruleSetLoadFailed(_:)` 上报（解析器回填 `RULE-SET` 行列号），规则集内容的解析错误即使被 resolver 吞掉也会还原抛出（编译期路径，名字拷贝与诊断字符串会分配）；
   - **提前启动 M5（性能基准与折中短路剪枝优化）**：
     - 搭建 10k 与 100k 规模规则生成器（`Tools/benchmark/corpus/main.go`）与基准评测套件（Swift `ClashRuleBenchmark` vs Go `Tools/benchmark/bench/main.go`）；
-    - 实现**成本分层求值与有界短路剪枝（Cost-Tiered Staged Evaluation with Bounded Short-Circuit Pruning）**：通过 `CategoryBounds` 维护各类别最低出现行号，将无脑全类别仲裁演进为 4 级求值剪枝；100k 下实测 Exact 命中 61.6ns、Suffix 142ns、IPv4/IPv6 118/200ns、Port/Process/GeoIP 均 < 100ns；
-    - 编译期优化四连修（struct arena trie、免排序拍平、`ByteKey` 预存哈希、`matchKind` 字节分发）：100k 编译 164ms → 78ms（-52%）；
-    - 100k 实测（同机 release）：编译 Swift 78.3ms vs mihomo 55.6ms；混合吞吐 27.2k vs 9.9k ops/s（**2.7x**）；全 miss 最坏 172μs vs 1035μs（**6x**）；快照 5.08MB vs Go 堆增量 24.45MB；10/10 查询策略一致。口径说明：mihomo 解析只做 append-to-slice（代价递延到匹配时顺序扫描），按 TCO 对标约 350 个混合查询回本（多付 22.7ms 加载，每查询省 64.6μs），详见 §7。
-- **测试现状**：64 项测试（62 项单元测试 + 2 项 Golden 集成套件）全部通过（`swift test`）。
+    - 实现**成本分层求值与有界短路剪枝（Cost-Tiered Staged Evaluation with Bounded Short-Circuit Pruning）**：通过 `CategoryBounds` 维护各类别最低出现行号，将无脑全类别仲裁演进为 4 级求值剪枝；100k 下实测 Exact 命中 62.6ns、Suffix 144.7ns、IPv4/IPv6 120.1/196.9ns、Port/Process/GeoIP 均 < 100ns（Process 84.1ns）；
+    - 编译期与热路径优化（`append(copying:)` 批量操作、`span[unchecked:]` 消除边界检查、struct arena trie、免排序拍平、`ByteKey` 预存哈希、`matchKind` 字节分发）：100k 编译 164ms → 74.7ms（-54%）；
+    - 100k 实测（同机 release，Span 架构）：快照 5.08MB vs Go 堆增量 24.50MB（**节省 79%**）；混合吞吐 27.5k vs 10.1k ops/s（**2.7x**）；全 miss 最坏 169.5μs vs 1027.6μs（**6.1x**）；10/10 查询策略与 oracle 100% 一致。口径说明：mihomo 解析只做 append-to-slice（代价递延到匹配时顺序扫描），按 TCO 对标约 350 个混合查询回本（多付 21.4ms 加载，每查询省 65.6μs），详见 §7。
+- **测试现状**：74 项测试（72 项单元测试 + 2 项 Golden 集成套件）全部通过（`swift test`），零堆分配断言正常；`RuleSetResolverTests` 覆盖 resolver 正常/嵌套/未找到/循环/宿主失败/内容错误传播及 4 种违约情形。
 - **后续规划**：
   - M4：`ClashRuleCAPI` 稳定 C ABI 导出（`@c`）、头文件生成、CLI 工具；
   - M5 收尾：CI 性能门禁与自动化回归。
@@ -56,7 +60,7 @@
 
 三个阶段严格分离，各自可独立测试与序列化：
 
-1. **Parser**：输入单个 UTF-8 `UnsafeBufferPointer<UInt8>`，产出带位置校验的中间规则流。不产生 `String`，一切以 `(offset, length)` 区间表示。
+1. **Parser**：输入单个 UTF-8 `RawSpan` / `Span<UInt8>`，产出带位置校验的中间规则流。不产生 `String`，一切以 `(offset, length)` 区间表示。
 2. **Compiler**：把规则流按类型编译进 Arena 里的各索引结构；产出一个**不可变、可序列化**的快照。
 3. **Matcher**：热路径。输入一次请求的 context（域名/目标 IP/端口/进程），输出 policy handle。零分配。
 
@@ -264,7 +268,7 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 
 ## 6. 解析器细节
 
-- **输入**：`RawSpan` / `UTF8Span`（SE-0447/SE-0456，Swift 6.2）优先，`UnsafeBufferPointer<UInt8>` 仅作内部 fallback；流式逐行扫描（`memchr('\n')`）。生命周期由 Span 的借用检查保证，入口无需 unsafe 约定。
+- **输入**：`RawSpan` / `Span<UInt8>`（SE-0447/SE-0456，Swift 6.4+），无 unsafe buffer fallback；流式逐行扫描（`memchr('\n')`）。生命周期由 Span 的借用检查保证，入口无需 unsafe 约定。
 - **arena 写入**：`OutputSpan`/`OutputRawSpan`（SE-0448）承担 bump 分配语义，`finalize` 一次性移交所有权。
 - **词法**：手写状态机，识别 `TYPE,ARG,POLICY` 三段结构（`no-resolve`、`no-traffic` 等 flag 一起处理）。支持 `# 注释`、空白、CRLF。
 - **验证**：规则类型白名单、IP/CIDR 合法性、policy 名字符集，出错带行号+列号。
@@ -317,7 +321,7 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 
 | 用途 | 原选型 | 现选型 | Proposal / 版本 | 说明 |
 |---|---|---|---|---|
-| 解析输入 | `UnsafeBufferPointer<UInt8>` | `RawSpan` / `UTF8Span` | SE-0447, SE-0456 · Swift 6.2 | 借用安全、non-escaping；`Data.bytes` 已直接返 `RawSpan` |
+| 解析输入 | `UnsafeBufferPointer<UInt8>` | `RawSpan` / `Span<UInt8>` | SE-0447, SE-0456 · Swift 6.4+ | 借用安全、non-escaping；无 unsafe fallback；`Data.bytes` 直接返 `RawSpan` |
 | Arena 写入 | 手写 bump 指针 | `OutputSpan` / `OutputRawSpan` | SE-0448 · Swift 6.2 | 初始化状态由类型系统保证 |
 | 热路径字节入参 | `ArraySlice<UInt8>` | `Span<UInt8>` | SE-0447 · Swift 6.2 | 容器无关；non-escapable 恰好匹配"不存储输入" |
 | POD 结构 | 仅 `@frozen` | `+ BitwiseCopyable` | SE-0426 | 原始字节视图（`Span.bytes`）的前提；复制为 memcpy |

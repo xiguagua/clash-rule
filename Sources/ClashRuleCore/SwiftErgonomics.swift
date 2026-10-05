@@ -13,12 +13,10 @@ extension RuleCompiler {
         ruleSets: [String: String] = [:]
     ) throws -> CompiledRules {
         let bytes = Array(text.utf8)
-        return try bytes.withUnsafeBytes { raw in
-            if ruleSets.isEmpty {
-                return try compile(raw)
-            } else {
-                return try compile(raw, ruleSets: ruleSets)
-            }
+        if ruleSets.isEmpty {
+            return try compile(bytes.span.bytes)
+        } else {
+            return try compile(bytes.span.bytes, ruleSets: ruleSets)
         }
     }
 }
@@ -172,19 +170,15 @@ extension Matcher {
         let targetAddress = targetIP.flatMap(parseIPAddress)
         let sourceAddress = sourceIP.flatMap(parseIPAddress)
         let countryCode: UInt32 = country.map(packCountryCode) ?? 0
-        return domainBytes.withUnsafeBufferPointer { domainBuf in
-            processBytes.withUnsafeBufferPointer { procBuf in
-                match(
-                    domain: domainBuf,
-                    targetAddress: targetAddress,
-                    targetPort: targetPort,
-                    sourceAddress: sourceAddress,
-                    sourcePort: sourcePort,
-                    processName: procBuf,
-                    network: network,
-                    countryCode: countryCode
-                )
-            }
-        }
+        return match(
+            domain: domainBytes.span,
+            targetAddress: targetAddress,
+            targetPort: targetPort,
+            sourceAddress: sourceAddress,
+            sourcePort: sourcePort,
+            processName: processBytes.span,
+            network: network,
+            countryCode: countryCode
+        )
     }
 }

@@ -11,6 +11,10 @@ public struct RuleParseError: Error, Sendable, Equatable {
         case policyTableFull
         case unknownRuleSet
         case circularRuleSet
+        /// 宿主 `RuleSetResolver` 报告的加载失败（I/O、权限、网络等）。
+        case ruleSetLoadFailed
+        /// `RuleSetResolver` 违反调用约定（见 `RuleCompiler.RuleSetResolver`）。
+        case invalidRuleSetResolver
     }
 
     public let code: Code
@@ -25,6 +29,13 @@ public struct RuleParseError: Error, Sendable, Equatable {
         self.line = line
         self.column = column
         self.detail = detail
+    }
+
+    /// 供 `RuleSetResolver` 报告宿主侧加载失败。
+    ///
+    /// 行列号由解析器回填为引用该规则集的 `RULE-SET` 行位置，调用方无需关心。
+    public static func ruleSetLoadFailed(_ detail: String) -> RuleParseError {
+        RuleParseError(.ruleSetLoadFailed, line: 0, column: 0, detail)
     }
 }
 

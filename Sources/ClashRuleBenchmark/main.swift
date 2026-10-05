@@ -109,16 +109,12 @@ func main() throws {
     var compiledSnapshot: CompiledRules?
 
     // Warmup parse
-    try ruleData.withUnsafeBytes { raw in
-        _ = try RuleCompiler.compile(raw)
-    }
+    _ = try RuleCompiler.compile(ruleData.bytes)
 
     // Timed parse runs
     for _ in 0..<parseRuns {
         let start = clock.now
-        let compiled = try ruleData.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw)
-        }
+        let compiled = try RuleCompiler.compile(ruleData.bytes)
         let elapsed = clock.now - start
         parseDurations.append(elapsed)
         compiledSnapshot = compiled
@@ -170,30 +166,21 @@ func main() throws {
 
     // 3. Measure Match Latency for Each Query
     var queryResults: [QueryResult] = []
-    let emptyBytes = [UInt8]()
 
     for prep in prepared {
         // Warmup
         for _ in 0..<5000 {
-            prep.domainBytes.withUnsafeBufferPointer { dBuf in
-                prep.processBytes.withUnsafeBufferPointer { pBuf in
-                    emptyBytes.withUnsafeBufferPointer { eBuf in
-                        let ctx = MatchContext(
-                            domain: dBuf,
-                            targetAddress: prep.targetAddr,
-                            targetPort: prep.targetPort,
-                            sourceAddress: prep.sourceAddr,
-                            sourcePort: prep.sourcePort,
-                            processName: pBuf,
-                            processPath: eBuf,
-                            network: prep.netProto,
-                            dscp: prep.dscp,
-                            countryCode: prep.countryCode
-                        )
-                        _ = matcher.match(context: ctx)
-                    }
-                }
-            }
+            _ = matcher.match(
+                domain: prep.domainBytes.span,
+                targetAddress: prep.targetAddr,
+                targetPort: prep.targetPort,
+                sourceAddress: prep.sourceAddr,
+                sourcePort: prep.sourcePort,
+                processName: prep.processBytes.span,
+                network: prep.netProto,
+                dscp: prep.dscp,
+                countryCode: prep.countryCode
+            )
         }
 
         // Timed loop
@@ -201,35 +188,27 @@ func main() throws {
         var lastPolicy = ""
 
         let matchStart = clock.now
-        prep.domainBytes.withUnsafeBufferPointer { dBuf in
-            prep.processBytes.withUnsafeBufferPointer { pBuf in
-                emptyBytes.withUnsafeBufferPointer { eBuf in
-                    let ctx = MatchContext(
-                        domain: dBuf,
-                        targetAddress: prep.targetAddr,
-                        targetPort: prep.targetPort,
-                        sourceAddress: prep.sourceAddr,
-                        sourcePort: prep.sourcePort,
-                        processName: pBuf,
-                        processPath: eBuf,
-                        network: prep.netProto,
-                        dscp: prep.dscp,
-                        countryCode: prep.countryCode
-                    )
-                    var lastResult: MatchResult? = nil
-                    for _ in 0..<iters {
-                        if let res = matcher.match(context: ctx) {
-                            lastResult = res
-                        }
-                    }
-                    if let res = lastResult {
-                        lastMatched = true
-                        lastPolicy = snapshot.policyName(res.policyID)
-                    } else {
-                        lastMatched = false
-                    }
-                }
+        var lastResult: MatchResult? = nil
+        for _ in 0..<iters {
+            if let res = matcher.match(
+                domain: prep.domainBytes.span,
+                targetAddress: prep.targetAddr,
+                targetPort: prep.targetPort,
+                sourceAddress: prep.sourceAddr,
+                sourcePort: prep.sourcePort,
+                processName: prep.processBytes.span,
+                network: prep.netProto,
+                dscp: prep.dscp,
+                countryCode: prep.countryCode
+            ) {
+                lastResult = res
             }
+        }
+        if let res = lastResult {
+            lastMatched = true
+            lastPolicy = snapshot.policyName(res.policyID)
+        } else {
+            lastMatched = false
         }
         let matchElapsed = clock.now - matchStart
         let elapsedNs = durationNanoseconds(matchElapsed)
@@ -251,25 +230,17 @@ func main() throws {
     let mixedStart = clock.now
     for k in 0..<mixedIters {
         let prep = prepared[k % prepared.count]
-        prep.domainBytes.withUnsafeBufferPointer { dBuf in
-            prep.processBytes.withUnsafeBufferPointer { pBuf in
-                emptyBytes.withUnsafeBufferPointer { eBuf in
-                    let ctx = MatchContext(
-                        domain: dBuf,
-                        targetAddress: prep.targetAddr,
-                        targetPort: prep.targetPort,
-                        sourceAddress: prep.sourceAddr,
-                        sourcePort: prep.sourcePort,
-                        processName: pBuf,
-                        processPath: eBuf,
-                        network: prep.netProto,
-                        dscp: prep.dscp,
-                        countryCode: prep.countryCode
-                    )
-                    _ = matcher.match(context: ctx)
-                }
-            }
-        }
+        _ = matcher.match(
+            domain: prep.domainBytes.span,
+            targetAddress: prep.targetAddr,
+            targetPort: prep.targetPort,
+            sourceAddress: prep.sourceAddr,
+            sourcePort: prep.sourcePort,
+            processName: prep.processBytes.span,
+            network: prep.netProto,
+            dscp: prep.dscp,
+            countryCode: prep.countryCode
+        )
     }
     let mixedElapsed = clock.now - mixedStart
     let mixedElapsedNs = durationNanoseconds(mixedElapsed)

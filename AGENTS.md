@@ -5,7 +5,7 @@ Swift implementation of a Clash rule engine. Source of truth: `docs/PLAN.md`.
 ## Commands & Status
 
 - **Status**: See `docs/PLAN.md` § Current State for current milestone.
-- **Toolchain**: Swift 6.4+ (`swift-tools-version:6.4`, `.swiftLanguageMode(.v6)`); platforms macOS 15 / iOS 18 / tvOS 18 / watchOS 11 / visionOS 2.
+- **Toolchain**: Swift 6.4+ (`swift-tools-version:6.4`, `.swiftLanguageMode(.v6)`); platforms macOS 27 / iOS 27 / tvOS 27 / watchOS 27 / visionOS 27.
 - **Test**: `swift test` (required before every commit).
 
 ## Hard Constraints
@@ -19,7 +19,7 @@ Swift implementation of a Clash rule engine. Source of truth: `docs/PLAN.md`.
 
 ## Gotchas
 
-- **Span API**: SE-0456 convenience properties are gated to macOS 26+; keep `UnsafeRawBufferPointer` / `UnsafeBufferPointer<UInt8>` overloads for Darwin < 26.
+- **Span API**: Standardized on Swift 6.4+ `Span<UInt8>` / `RawSpan` first-class primitives throughout the parser and matcher. No backward compatibility fallbacks (no UnsafeBufferPointer overloads).
 - **Comparison**: `[UInt8]` / `ContiguousArray` are not `Comparable`; use `lexLess` (`Bytes.swift`).
 - **Oracle**: Golden tests treat **mihomo as the oracle** for rule semantics.
 - **C ABI**: Never name a C header field/parameter `bytes` (name collision with `Data.bytes`).

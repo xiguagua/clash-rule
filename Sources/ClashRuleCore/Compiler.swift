@@ -37,14 +37,15 @@ struct ByteKey: Hashable {
 
 /// Lowercase + FNV-1a in a single pass (hash covers the lowered bytes,
 /// same algorithm as `fnv1a` in Bytes.swift).
-private func lowerKey(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> ByteKey {
+private func lowerKey(_ span: Span<UInt8>) -> ByteKey {
     var out = [UInt8]()
-    out.reserveCapacity(r.count)
+    let count = span.count
+    out.reserveCapacity(count)
     var h: UInt64 = 0xcbf2_9ce4_8422_2325
-    for i in r {
-        let b = lowerByte(raw[i])
-        out.append(b)
-        h = (h ^ UInt64(b)) &* 0x100000001b3
+    for i in 0..<count {
+        let low = lowerByte(span[unchecked: i])
+        out.append(low)
+        h = (h ^ UInt64(low)) &* 0x100000001b3
     }
     return ByteKey(bytes: out, hash: h)
 }
@@ -81,19 +82,19 @@ struct RuleSink {
     var logicChildIndices: [UInt32] = []
 
     mutating func intern(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, line: Int, base: Int
+        _ span: Span<UInt8>, line: Int, column: Int
     ) throws(RuleParseError) -> UInt16 {
-        guard !r.isEmpty else {
-            throw RuleParseError(.invalidArgument, line: line, column: r.lowerBound - base + 1, "empty policy name")
+        guard !span.isEmpty else {
+            throw RuleParseError(.invalidArgument, line: line, column: column, "empty policy name")
         }
-        let key = ByteKey([UInt8](raw[r]))
+        let key = ByteKey(Array(copying: span))
         if let id = policyKeys[key] { return id }
         guard policyRanges.count < 65536 else {
             throw RuleParseError(.policyTableFull, line: line, column: 1, "more than 65536 distinct policy names")
         }
         let id = UInt16(policyRanges.count)
-        let offset = policyArena.append(r, in: raw)
-        policyRanges.append(PolicyRange(offset: offset, length: UInt16(r.count)))
+        let offset = policyArena.append(span)
+        policyRanges.append(PolicyRange(offset: offset, length: UInt16(span.count)))
         policyKeys[key] = id
         return id
     }
@@ -103,26 +104,26 @@ struct RuleSink {
     var bounds = CategoryBounds()
 
     mutating func addExact(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+        _ span: Span<UInt8>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minExactRule = min(bounds.minExactRule, ruleIndex)
-        let key = lowerKey(raw, r)
+        let key = lowerKey(span)
         if let old = exact[key], old.rule <= ruleIndex { return }
         exact[key] = (policyID, ruleIndex)
     }
 
     mutating func addSuffix(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+        _ span: Span<UInt8>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minSuffixRule = min(bounds.minSuffixRule, ruleIndex)
-        trie.addSuffix(domain: raw, range: r, policy: policyID, rule: ruleIndex)
+        trie.addSuffix(domain: span, policy: policyID, rule: ruleIndex)
     }
 
     mutating func addKeyword(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+        _ span: Span<UInt8>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minKeywordRule = min(bounds.minKeywordRule, ruleIndex)
-        let key = lowerBytes(raw, r)
+        let key = lowerBytes(span)
         keywords.append((key, policyID, ruleIndex))
     }
 
@@ -166,19 +167,19 @@ struct RuleSink {
     }
 
     mutating func addProcessName(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+        _ span: Span<UInt8>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minProcessNameRule = min(bounds.minProcessNameRule, ruleIndex)
-        let key = lowerKey(raw, r)
+        let key = lowerKey(span)
         if let old = processName[key], old.rule <= ruleIndex { return }
         processName[key] = (policyID, ruleIndex)
     }
 
     mutating func addProcessPath(
-        _ raw: UnsafeRawBufferPointer, _ r: Range<Int>, policyID: UInt16, ruleIndex: UInt32
+        _ span: Span<UInt8>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minProcessPathRule = min(bounds.minProcessPathRule, ruleIndex)
-        let key = lowerKey(raw, r)
+        let key = lowerKey(span)
         if let old = processPath[key], old.rule <= ruleIndex { return }
         processPath[key] = (policyID, ruleIndex)
     }
@@ -218,12 +219,10 @@ struct RuleSink {
         matchRule = (policyID, ruleIndex)
     }
 
-    mutating func addLogicString(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> (offset: UInt32, length: UInt16) {
-        var lower = [UInt8]()
-        lower.reserveCapacity(r.count)
-        for i in r { lower.append(lowerByte(raw[i])) }
+    mutating func addLogicString(_ span: Span<UInt8>) -> (offset: UInt32, length: UInt16) {
+        let lower = lowerBytes(span)
         let offset = logicArena.append(lower)
-        return (offset, UInt16(r.count))
+        return (offset, UInt16(lower.count))
     }
 
     mutating func addLogicNode(_ node: LogicNode) -> UInt32 {
@@ -247,10 +246,11 @@ struct RuleSink {
         ))
     }
 
-    private func lowerBytes(_ raw: UnsafeRawBufferPointer, _ r: Range<Int>) -> [UInt8] {
+    private func lowerBytes(_ span: Span<UInt8>) -> [UInt8] {
         var out = [UInt8]()
-        out.reserveCapacity(r.count)
-        for i in r { out.append(lowerByte(raw[i])) }
+        let count = span.count
+        out.reserveCapacity(count)
+        for i in 0..<count { out.append(lowerByte(span[unchecked: i])) }
         return out
     }
 }
@@ -269,16 +269,16 @@ struct SuffixTrieBuilder {
 
     private(set) var nodes: [BuildNode] = [BuildNode()]
 
-    mutating func addSuffix(domain raw: UnsafeRawBufferPointer, range r: Range<Int>, policy: UInt16, rule: UInt32) {
+    mutating func addSuffix(domain: Span<UInt8>, policy: UInt16, rule: UInt32) {
         // Walk labels right-to-left (TLD first) with no intermediate arrays.
         // Callers pass validated domains, so labels are non-empty; the walk
         // mirrors left-to-right splitting exactly even for invalid input.
         var node = 0
-        var end = r.upperBound
+        var end = domain.count
         while true {
             var start = end
-            while start > r.lowerBound && raw[start - 1] != UInt8(ascii: ".") { start -= 1 }
-            let key = lowerKey(raw, start..<end)
+            while start > 0 && domain[unchecked: start - 1] != UInt8(ascii: ".") { start -= 1 }
+            let key = lowerKey(domain.extracting(start..<end))
             if let next = nodes[node].children[key] {
                 node = Int(next)
             } else {
@@ -287,7 +287,7 @@ struct SuffixTrieBuilder {
                 nodes.append(BuildNode(label: key))
                 node = Int(child)
             }
-            if start == r.lowerBound { break }
+            if start == 0 { break }
             end = start - 1
         }
         if let current = nodes[node].terminal, current.rule <= rule { return }

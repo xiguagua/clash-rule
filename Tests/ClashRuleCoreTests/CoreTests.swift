@@ -5,8 +5,7 @@ import Foundation
 // MARK: - Fixtures
 
 private func compile(_ text: String) throws -> CompiledRules {
-    let data = Data(text.utf8)
-    return try data.withUnsafeBytes { try RuleCompiler.compile($0) }
+    try RuleCompiler.compile(text)
 }
 
 private func v4(_ hex: UInt32) -> UInt128 { UInt128(hex) }
@@ -23,9 +22,7 @@ private func matchDomain(
     sourcePort: UInt16 = 0
 ) -> MatchResult? {
     let bytes = Array(domain.utf8)
-    return bytes.withUnsafeBufferPointer {
-        matcher.match(domain: $0, targetAddress: address, targetPort: targetPort, sourcePort: sourcePort)
-    }
+    return matcher.match(domain: bytes.span, targetAddress: address, targetPort: targetPort, sourcePort: sourcePort)
 }
 
 // MARK: - Basic matching
@@ -358,20 +355,16 @@ private func matchDomain(
         let zone = malloc_default_zone()
 
         // Warm up
-        sample.withUnsafeBufferPointer { buf in
-            _ = matcher.match(domain: buf, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
-        }
+        _ = matcher.match(domain: sample.span, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
 
         // Check zone size in use across repeated iterations
         var stats1 = malloc_statistics_t()
         var stats2 = malloc_statistics_t()
-        sample.withUnsafeBufferPointer { buf in
-            malloc_zone_statistics(zone, &stats1)
-            for _ in 0..<100 {
-                _ = matcher.match(domain: buf, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
-            }
-            malloc_zone_statistics(zone, &stats2)
+        malloc_zone_statistics(zone, &stats1)
+        for _ in 0..<100 {
+            _ = matcher.match(domain: sample.span, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
         }
+        malloc_zone_statistics(zone, &stats2)
         // No allocations were leaked or performed by match itself; stats2.size_allocated <= stats1.size_allocated + noise
         // Ensure size_allocated did not increase due to match iterations
         #expect(stats2.size_in_use <= stats1.size_in_use)
@@ -422,30 +415,20 @@ private func matchDomain(
         let gitPath = Array("/usr/local/bin/git".utf8)
         let other = Array("wget".utf8)
 
-        curl.withUnsafeBufferPointer { buf in
-            let res = matcher.match(processName: buf)
-            #expect(rules.policyName(res!.policyID) == "CurlPolicy")
-        }
+        let res1 = matcher.match(processName: curl.span)
+        #expect(rules.policyName(res1!.policyID) == "CurlPolicy")
 
-        curlUpper.withUnsafeBufferPointer { buf in
-            let res = matcher.match(processName: buf)
-            #expect(rules.policyName(res!.policyID) == "CurlPolicy")
-        }
+        let res2 = matcher.match(processName: curlUpper.span)
+        #expect(rules.policyName(res2!.policyID) == "CurlPolicy")
 
-        telegram.withUnsafeBufferPointer { buf in
-            let res = matcher.match(processName: buf)
-            #expect(rules.policyName(res!.policyID) == "TelegramPolicy")
-        }
+        let res3 = matcher.match(processName: telegram.span)
+        #expect(rules.policyName(res3!.policyID) == "TelegramPolicy")
 
-        gitPath.withUnsafeBufferPointer { buf in
-            let res = matcher.match(processPath: buf)
-            #expect(rules.policyName(res!.policyID) == "GitPolicy")
-        }
+        let res4 = matcher.match(processPath: gitPath.span)
+        #expect(rules.policyName(res4!.policyID) == "GitPolicy")
 
-        other.withUnsafeBufferPointer { buf in
-            let res = matcher.match(processName: buf)
-            #expect(rules.policyName(res!.policyID) == "Fallback")
-        }
+        let res5 = matcher.match(processName: other.span)
+        #expect(rules.policyName(res5!.policyID) == "Fallback")
     }
 
     @Test func networkProtocol() throws {
@@ -531,29 +514,23 @@ private func matchDomain(
         let proc = Array("curl".utf8)
 
         // Process (rule 0) beats Domain (rule 1), Geo (rule 2), Network (rule 3)
-        domain.withUnsafeBufferPointer { dBuf in
-            proc.withUnsafeBufferPointer { pBuf in
-                let res = matcher.match(
-                    domain: dBuf,
-                    processName: pBuf,
-                    network: .tcp,
-                    countryCode: packCountryCode("CN")
-                )
-                #expect(res?.ruleIndex == 0)
-                #expect(rules.policyName(res!.policyID) == "ProcessRule")
-            }
-        }
+        let resProcess = matcher.match(
+            domain: domain.span,
+            processName: proc.span,
+            network: .tcp,
+            countryCode: packCountryCode("CN")
+        )
+        #expect(resProcess?.ruleIndex == 0)
+        #expect(rules.policyName(resProcess!.policyID) == "ProcessRule")
 
         // Without process, Domain (rule 1) beats Geo (rule 2) and Network (rule 3)
-        domain.withUnsafeBufferPointer { dBuf in
-            let res = matcher.match(
-                domain: dBuf,
-                network: .tcp,
-                countryCode: packCountryCode("CN")
-            )
-            #expect(res?.ruleIndex == 1)
-            #expect(rules.policyName(res!.policyID) == "DomainRule")
-        }
+        let resDomain = matcher.match(
+            domain: domain.span,
+            network: .tcp,
+            countryCode: packCountryCode("CN")
+        )
+        #expect(resDomain?.ruleIndex == 1)
+        #expect(rules.policyName(resDomain!.policyID) == "DomainRule")
 
         // Without domain, GeoIP (rule 2) beats Network (rule 3)
         let resGeo = matcher.match(network: .tcp, countryCode: packCountryCode("CN"))
@@ -571,13 +548,11 @@ private func matchDomain(
         let matcher = Matcher(rules)
 
         let d1 = Array("mail.google.com".utf8)
-        d1.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, targetPort: 443)
-            #expect(rules.policyName(res!.policyID) == "GoogleSSL")
+        let res = matcher.match(domain: d1.span, targetPort: 443)
+        #expect(rules.policyName(res!.policyID) == "GoogleSSL")
 
-            let res80 = matcher.match(domain: buf, targetPort: 80)
-            #expect(rules.policyName(res80!.policyID) == "Fallback")
-        }
+        let res80 = matcher.match(domain: d1.span, targetPort: 80)
+        #expect(rules.policyName(res80!.policyID) == "Fallback")
 
         let resTCP = matcher.match(targetAddress: v4(0x0A01_0203), network: .tcp)
         #expect(rules.policyName(resTCP!.policyID) == "InternalTCP")
@@ -598,18 +573,14 @@ private func matchDomain(
         let icloud = Array("icloud.com".utf8)
         let other = Array("google.com".utf8)
 
-        apple.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf)
-            #expect(rules.policyName(res!.policyID) == "AppleDirect")
-        }
-        icloud.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf)
-            #expect(rules.policyName(res!.policyID) == "AppleDirect")
-        }
-        other.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf)
-            #expect(rules.policyName(res!.policyID) == "Fallback")
-        }
+        let res1 = matcher.match(domain: apple.span)
+        #expect(rules.policyName(res1!.policyID) == "AppleDirect")
+
+        let res2 = matcher.match(domain: icloud.span)
+        #expect(rules.policyName(res2!.policyID) == "AppleDirect")
+
+        let res3 = matcher.match(domain: other.span)
+        #expect(rules.policyName(res3!.policyID) == "Fallback")
     }
 
     @Test func notRule() throws {
@@ -640,10 +611,8 @@ private func matchDomain(
         #expect(rules.policyName(res1!.policyID) == "SubGroupTCP")
 
         let corp = Array("api.corp.internal".utf8)
-        corp.withUnsafeBufferPointer { buf in
-            let resCorp = matcher.match(domain: buf, targetPort: 8080, network: .udp)
-            #expect(rules.policyName(resCorp!.policyID) == "SubGroupCorp")
-        }
+        let resCorp = matcher.match(domain: corp.span, targetPort: 8080, network: .udp)
+        #expect(rules.policyName(resCorp!.policyID) == "SubGroupCorp")
     }
 
     @Test func nestedLogicRules() throws {
@@ -658,22 +627,17 @@ private func matchDomain(
         let b = Array("b.com".utf8)
         let c = Array("c.com".utf8)
 
-        a.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, network: .tcp)
-            #expect(rules.policyName(res!.policyID) == "ComplexPolicy")
-        }
-        b.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, network: .tcp)
-            #expect(rules.policyName(res!.policyID) == "ComplexPolicy")
-        }
-        a.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, network: .udp)
-            #expect(rules.policyName(res!.policyID) == "Fallback")
-        }
-        c.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, network: .tcp)
-            #expect(rules.policyName(res!.policyID) == "Fallback")
-        }
+        let resA = matcher.match(domain: a.span, network: .tcp)
+        #expect(rules.policyName(resA!.policyID) == "ComplexPolicy")
+
+        let resB = matcher.match(domain: b.span, network: .tcp)
+        #expect(rules.policyName(resB!.policyID) == "ComplexPolicy")
+
+        let resAUdp = matcher.match(domain: a.span, network: .udp)
+        #expect(rules.policyName(resAUdp!.policyID) == "Fallback")
+
+        let resC = matcher.match(domain: c.span, network: .tcp)
+        #expect(rules.policyName(resC!.policyID) == "Fallback")
     }
 
     @Test func logicRuleFileOrderArbitration() throws {
@@ -689,22 +653,18 @@ private func matchDomain(
         let matcher = Matcher(rules)
 
         let prio = Array("priority.com".utf8)
-        prio.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, targetPort: 443)
-            #expect(res?.ruleIndex == 0)
-            #expect(rules.policyName(res!.policyID) == "DirectRule")
-        }
+        let res = matcher.match(domain: prio.span, targetPort: 443)
+        #expect(res?.ruleIndex == 0)
+        #expect(rules.policyName(res!.policyID) == "DirectRule")
 
         let other = Array("other.com".utf8)
-        other.withUnsafeBufferPointer { buf in
-            let res = matcher.match(domain: buf, targetPort: 443)
-            #expect(res?.ruleIndex == 1)
-            #expect(rules.policyName(res!.policyID) == "LogicRule")
+        let resOther = matcher.match(domain: other.span, targetPort: 443)
+        #expect(resOther?.ruleIndex == 1)
+        #expect(rules.policyName(resOther!.policyID) == "LogicRule")
 
-            let res80 = matcher.match(domain: buf, targetPort: 80)
-            #expect(res80?.ruleIndex == 2)
-            #expect(rules.policyName(res80!.policyID) == "SuffixRule")
-        }
+        let res80 = matcher.match(domain: other.span, targetPort: 80)
+        #expect(res80?.ruleIndex == 2)
+        #expect(rules.policyName(res80!.policyID) == "SuffixRule")
     }
 
     @Test func ruleSetClassical() throws {
@@ -724,10 +684,7 @@ private func matchDomain(
             DSCP,10
             GEOIP,JP
             """
-        let data = Data(rulesText.utf8)
-        let rules = try data.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw, ruleSets: ["my-rules": listText])
-        }
+        let rules = try RuleCompiler.compile(rulesText, ruleSets: ["my-rules": listText])
         let matcher = Matcher(rules)
 
         // Exact domain
@@ -759,9 +716,7 @@ private func matchDomain(
 
         // Process name
         let pName = Array("curl".utf8)
-        let resProc = pName.withUnsafeBufferPointer {
-            matcher.match(context: MatchContext(processName: $0))
-        }
+        let resProc = matcher.match(processName: pName.span)
         #expect(resProc?.ruleIndex == 0)
         #expect(rules.policyName(resProc!.policyID) == "PROXY")
 
@@ -806,13 +761,10 @@ private func matchDomain(
             2001:db8:abcd::/48
             - '172.16.0.0/12'
             """
-        let data = Data(rulesText.utf8)
-        let rules = try data.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw, ruleSets: [
-                "domain-set": domainPayload,
-                "cidr-set": cidrPayload,
-            ])
-        }
+        let rules = try RuleCompiler.compile(rulesText, ruleSets: [
+            "domain-set": domainPayload,
+            "cidr-set": cidrPayload,
+        ])
         let matcher = Matcher(rules)
 
         #expect(rules.policyName(matchDomain(matcher, "plain.com")!.policyID) == "PROXY")
@@ -843,10 +795,7 @@ private func matchDomain(
             DOMAIN,beat.com
             DOMAIN,win.com
             """
-        let data = Data(rulesText.utf8)
-        let rules = try data.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw, ruleSets: ["mid-set": midPayload])
-        }
+        let rules = try RuleCompiler.compile(rulesText, ruleSets: ["mid-set": midPayload])
         let matcher = Matcher(rules)
 
         let resBeat = matchDomain(matcher, "beat.com")
@@ -865,10 +814,7 @@ private func matchDomain(
         let payload = """
             DOMAIN,foo.com,INLINE_IGNORED
             """
-        let data = Data(rulesText.utf8)
-        let rules = try data.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw, ruleSets: ["my-set": payload])
-        }
+        let rules = try RuleCompiler.compile(rulesText, ruleSets: ["my-set": payload])
         let matcher = Matcher(rules)
         let res = matchDomain(matcher, "foo.com")
         #expect(rules.policyName(res!.policyID) == "RULE_SET_TARGET")
@@ -885,13 +831,10 @@ private func matchDomain(
         let childPayload = """
             DOMAIN,child.com
             """
-        let data = Data(rulesText.utf8)
-        let rules = try data.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw, ruleSets: [
-                "parent": parentPayload,
-                "child": childPayload,
-            ])
-        }
+        let rules = try RuleCompiler.compile(rulesText, ruleSets: [
+            "parent": parentPayload,
+            "child": childPayload,
+        ])
         let matcher = Matcher(rules)
         #expect(rules.policyName(matchDomain(matcher, "parent.com")!.policyID) == "PARENT_POLICY")
         #expect(rules.policyName(matchDomain(matcher, "child.com")!.policyID) == "PARENT_POLICY")
@@ -905,22 +848,17 @@ private func matchDomain(
         let logicPayload = """
             AND,((DOMAIN,logic.com),(NETWORK,tcp))
             """
-        let data = Data(rulesText.utf8)
-        let rules = try data.withUnsafeBytes { raw in
-            try RuleCompiler.compile(raw, ruleSets: ["logic-set": logicPayload])
-        }
+        let rules = try RuleCompiler.compile(rulesText, ruleSets: ["logic-set": logicPayload])
         let matcher = Matcher(rules)
 
         let dBytes = Array("logic.com".utf8)
-        dBytes.withUnsafeBufferPointer { buf in
-            let resTCP = matcher.match(context: MatchContext(domain: buf, network: .tcp))
-            #expect(resTCP?.ruleIndex == 0)
-            #expect(rules.policyName(resTCP!.policyID) == "LOGIC_TARGET")
+        let resTCP = matcher.match(domain: dBytes.span, network: .tcp)
+        #expect(resTCP?.ruleIndex == 0)
+        #expect(rules.policyName(resTCP!.policyID) == "LOGIC_TARGET")
 
-            let resUDP = matcher.match(context: MatchContext(domain: buf, network: .udp))
-            #expect(resUDP?.ruleIndex == 1)
-            #expect(rules.policyName(resUDP!.policyID) == "FINAL")
-        }
+        let resUDP = matcher.match(domain: dBytes.span, network: .udp)
+        #expect(resUDP?.ruleIndex == 1)
+        #expect(rules.policyName(resUDP!.policyID) == "FINAL")
     }
 }
 
@@ -931,9 +869,9 @@ private func matchDomain(
         _ text: String, _ code: RuleParseError.Code, line: Int,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
-        let data = Data(text.utf8)
+        let bytes = Array(text.utf8)
         do {
-            _ = try RuleCompiler.compile(data.withUnsafeBytes { $0 })
+            _ = try RuleCompiler.compile(bytes.span.bytes)
             Issue.record("expected error \(code) at line \(line), but compile succeeded", sourceLocation: sourceLocation)
         } catch {
             // compile is typed-throws, so `error` is a RuleParseError here.
@@ -957,12 +895,11 @@ private func matchDomain(
     }
 
     @Test func circularRuleSet() {
-        let rules = "RULE-SET,setA,DIRECT\n"
-        let data = Data(rules.utf8)
+        let rules = Array("RULE-SET,setA,DIRECT\n".utf8)
         let setA = "RULE-SET,setB\n"
         let setB = "RULE-SET,setA\n"
         do {
-            _ = try RuleCompiler.compile(data.withUnsafeBytes { $0 }, ruleSets: [
+            _ = try RuleCompiler.compile(rules.span.bytes, ruleSets: [
                 "setA": setA,
                 "setB": setB,
             ])
@@ -1049,5 +986,153 @@ private func matchDomain(
         expectError("NOT,((DOMAIN,a.com),(PORT,80)),DIRECT\n", .malformedLine, line: 1)
         expectError("AND,((DOMAIN,a.com),(INVALID-TYPE,x)),DIRECT\n", .unknownRuleType, line: 1)
         expectError("AND,((DOMAIN,a.com),(PORT,80)\n", .malformedLine, line: 1)
+    }
+}
+
+// MARK: - RuleSetResolver contract
+
+/// 覆盖 `RuleCompiler.compile(_:ruleSetResolver:)` 闭包借用路径及其调用约定。
+@Suite struct RuleSetResolverTests {
+    private static func bytes(_ span: Span<UInt8>) -> [UInt8] {
+        var out = [UInt8]()
+        out.reserveCapacity(span.count)
+        for b in span { out.append(b) }
+        return out
+    }
+
+    /// 符合约定的字典 resolver：找到则恰好调用一次 body 并返回 true，否则返回 false。
+    private func dictResolver(_ sets: [String: String]) -> RuleCompiler.RuleSetResolver {
+        var map: [[UInt8]: [UInt8]] = [:]
+        for (k, v) in sets { map[Array(k.utf8)] = Array(v.utf8) }
+        return { (name: Span<UInt8>, body: (Span<UInt8>) throws(RuleParseError) -> Void) throws(RuleParseError) -> Bool in
+            guard let payload = map[Self.bytes(name)] else { return false }
+            try body(payload.span)
+            return true
+        }
+    }
+
+    private func compile(_ text: String, _ resolver: @escaping RuleCompiler.RuleSetResolver) throws(RuleParseError) -> CompiledRules {
+        let input = Array(text.utf8)
+        return try RuleCompiler.compile(input.span.bytes, ruleSetResolver: resolver)
+    }
+
+    private func compileError(
+        _ text: String, _ resolver: @escaping RuleCompiler.RuleSetResolver,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) -> RuleParseError? {
+        do {
+            _ = try compile(text, resolver)
+            Issue.record("expected compile to fail", sourceLocation: sourceLocation)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    // MARK: 正常路径
+
+    @Test func resolvesAndMatches() throws {
+        let rules = try compile(
+            "RULE-SET,my-set,PROXY\nMATCH,DIRECT\n",
+            dictResolver(["my-set": "DOMAIN,foo.com\nDOMAIN-SUFFIX,bar.com\n"])
+        )
+        let matcher = Matcher(rules)
+        let foo = matchDomain(matcher, "foo.com")
+        #expect(foo?.ruleIndex == 0)
+        #expect(rules.policyName(foo!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "a.bar.com")!.policyID) == "PROXY")
+        #expect(rules.policyName(matchDomain(matcher, "other.com")!.policyID) == "DIRECT")
+    }
+
+    @Test func nestedRuleSetReentersResolver() throws {
+        let rules = try compile(
+            "RULE-SET,parent,PARENT\nMATCH,DIRECT\n",
+            dictResolver([
+                "parent": "DOMAIN,parent.com\nRULE-SET,child\n",
+                "child": "DOMAIN,child.com\n",
+            ])
+        )
+        let matcher = Matcher(rules)
+        #expect(rules.policyName(matchDomain(matcher, "parent.com")!.policyID) == "PARENT")
+        #expect(rules.policyName(matchDomain(matcher, "child.com")!.policyID) == "PARENT")
+    }
+
+    // MARK: 错误路径
+
+    @Test func notFound() {
+        let err = compileError("DOMAIN,a.com,DIRECT\nRULE-SET,missing,PROXY\n", dictResolver([:]))
+        #expect(err?.code == .unknownRuleSet)
+        #expect(err?.line == 2)
+        #expect(err?.column == 10)
+    }
+
+    @Test func circularReference() {
+        let err = compileError(
+            "RULE-SET,setA,DIRECT\n",
+            dictResolver(["setA": "RULE-SET,setB\n", "setB": "RULE-SET,setA\n"])
+        )
+        #expect(err?.code == .circularRuleSet)
+    }
+
+    @Test func hostLoadFailureIsStampedWithRuleSetLocation() {
+        let resolver: RuleCompiler.RuleSetResolver = { _, _ throws(RuleParseError) in
+            throw .ruleSetLoadFailed("disk unavailable")
+        }
+        let err = compileError("DOMAIN,a.com,DIRECT\nRULE-SET,remote,PROXY\n", resolver)
+        #expect(err?.code == .ruleSetLoadFailed)
+        #expect(err?.line == 2)
+        #expect(err?.column == 10)
+        #expect(err?.detail.contains("remote") == true)
+        #expect(err?.detail.contains("disk unavailable") == true)
+    }
+
+    @Test func payloadParseErrorPropagatesUnchanged() {
+        // 规则集内部第 2 行出错：行号应指向规则集内容，而非被 RULE-SET 行覆盖。
+        let err = compileError(
+            "RULE-SET,bad,PROXY\n",
+            dictResolver(["bad": "DOMAIN,ok.com\nJUNK,x\n"])
+        )
+        #expect(err?.code == .unknownRuleType)
+        #expect(err?.line == 2)
+    }
+
+    // MARK: 违反调用约定
+
+    @Test func swallowedPayloadErrorIsRestored() {
+        let payload = Array("JUNK,x\n".utf8)
+        let resolver: RuleCompiler.RuleSetResolver = { _, body throws(RuleParseError) in
+            do throws(RuleParseError) { try body(payload.span) } catch { /* 违规：吞掉错误 */ }
+            return true
+        }
+        let err = compileError("RULE-SET,s,PROXY\n", resolver)
+        #expect(err?.code == .unknownRuleType)
+    }
+
+    @Test func bodyInvokedTwice() {
+        let payload = Array("DOMAIN,a.com\n".utf8)
+        let resolver: RuleCompiler.RuleSetResolver = { _, body throws(RuleParseError) in
+            try body(payload.span)
+            try body(payload.span)
+            return true
+        }
+        let err = compileError("RULE-SET,s,PROXY\n", resolver)
+        #expect(err?.code == .invalidRuleSetResolver)
+        #expect(err?.line == 1)
+    }
+
+    @Test func returnedTrueWithoutBody() {
+        let resolver: RuleCompiler.RuleSetResolver = { _, _ throws(RuleParseError) in true }
+        let err = compileError("RULE-SET,s,PROXY\n", resolver)
+        #expect(err?.code == .invalidRuleSetResolver)
+    }
+
+    @Test func suppliedBodyButReturnedFalse() {
+        let payload = Array("DOMAIN,a.com\n".utf8)
+        let resolver: RuleCompiler.RuleSetResolver = { _, body throws(RuleParseError) in
+            try body(payload.span)
+            return false
+        }
+        let err = compileError("RULE-SET,s,PROXY\n", resolver)
+        #expect(err?.code == .invalidRuleSetResolver)
     }
 }

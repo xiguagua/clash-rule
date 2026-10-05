@@ -3,13 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "clash-rule",
-    // UInt128 (SE-0425) and Span (SE-0447) need macOS 15 / iOS 18.
     platforms: [
-        .macOS(.v15),
-        .iOS(.v18),
-        .tvOS(.v18),
-        .watchOS(.v11),
-        .visionOS(.v2),
+        .macOS("27.0"),
+        .iOS("27.0"),
+        .tvOS("27.0"),
+        .watchOS("27.0"),
+        .visionOS("27.0"),
     ],
     products: [
         .library(name: "ClashRuleCore", targets: ["ClashRuleCore"]),
