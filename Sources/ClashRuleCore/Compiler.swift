@@ -237,6 +237,16 @@ struct RuleSink {
         return start
     }
 
+    mutating func reserveLogicChildIndices(count: Int) -> UInt32 {
+        let start = UInt32(logicChildIndices.count)
+        logicChildIndices.append(contentsOf: repeatElement(UInt32(0), count: count))
+        return start
+    }
+
+    mutating func setLogicChildIndex(_ index: UInt32, at offset: UInt32) {
+        logicChildIndices[Int(offset)] = index
+    }
+
     mutating func addLogicRule(rootNodeIndex: UInt32, policyID: UInt16, ruleIndex: UInt32) {
         bounds.minLogicRule = min(bounds.minLogicRule, ruleIndex)
         logicRules.append(LogicRule(

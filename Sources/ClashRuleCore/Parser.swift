@@ -33,6 +33,56 @@ struct RuleParser {
     private static let kDOMAINSUFFIX: [UInt8] = Array("DOMAIN-SUFFIX".utf8)
     private static let kDOMAINKEYWORD: [UInt8] = Array("DOMAIN-KEYWORD".utf8)
 
+    /// Iterates comma-delimited ranges without materializing a per-line array.
+    private struct CommaRangeScanner {
+        private var cursor: Int
+        private let end: Int
+        private var depth = 0
+
+        init(_ range: Range<Int>) {
+            cursor = range.lowerBound
+            end = range.upperBound
+        }
+
+        mutating func next(
+            in raw: Span<UInt8>,
+            line: Int,
+            base: Int,
+            validateParentheses: Bool
+        ) throws(RuleParseError) -> Range<Int>? {
+            guard cursor < end else { return nil }
+            let segmentStart = cursor
+            var comma = cursor
+            while comma < end {
+                let byte = raw[comma]
+                if byte == UInt8(ascii: "(") {
+                    depth += 1
+                } else if byte == UInt8(ascii: ")") {
+                    if depth > 0 {
+                        depth -= 1
+                    } else if validateParentheses {
+                        throw RuleParseError(
+                            .malformedLine, line: line, column: comma - base + 1, "unmatched ')'"
+                        )
+                    }
+                } else if byte == UInt8(ascii: ",") && depth == 0 {
+                    break
+                }
+                comma += 1
+            }
+            if validateParentheses && depth != 0 {
+                throw RuleParseError(.malformedLine, line: line, column: segmentStart - base + 1, "unclosed '('")
+            }
+
+            var start = segmentStart
+            var stop = comma
+            while start < stop && RuleParser.isInlineSpace(raw[start]) { start += 1 }
+            while stop > start && RuleParser.isInlineSpace(raw[stop - 1]) { stop -= 1 }
+            cursor = comma < end ? comma + 1 : end
+            return start..<stop
+        }
+    }
+
     static func toBytes(_ span: Span<UInt8>) -> [UInt8] {
         Array(copying: span)
     }
@@ -141,49 +191,40 @@ struct RuleParser {
         if start == stop { return }
         if raw[start] == UInt8(ascii: "#") { return }
 
-        // Split into comma segments, trimming whitespace around each one, respecting parentheses.
-        var segments: [Range<Int>] = []
-        var cursor = start
-        var depth = 0
-        while cursor < stop {
-            var comma = cursor
-            while comma < stop {
-                let b = raw[comma]
-                if b == UInt8(ascii: "(") { depth += 1 }
-                else if b == UInt8(ascii: ")") && depth > 0 { depth -= 1 }
-                else if b == UInt8(ascii: ",") && depth == 0 { break }
-                comma += 1
-            }
-            var s = cursor, e = comma
-            while s < e && isInlineSpace(raw[s]) { s += 1 }
-            while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
-            segments.append(s..<e)
-            if comma >= stop { break }
-            cursor = comma + 1
-        }
+        var segments = CommaRangeScanner(start..<stop)
+        guard let typeRange = try segments.next(
+            in: raw, line: line, base: base, validateParentheses: false
+        ) else { return }
 
         // Rule type name (case-insensitive, no allocation).
-        guard let kind = matchKind(raw, segments[0]) else {
+        guard let kind = matchKind(raw, typeRange) else {
             throw RuleParseError(
                 .unknownRuleType, line: line, column: 1,
-                "unsupported rule type '\(toString(raw.extracting(segments[0])))'"
+                "unsupported rule type '\(toString(raw.extracting(typeRange)))'"
             )
         }
 
         if case .match = kind {
-            guard segments.count == 2, !segments[1].isEmpty else {
+            guard let policyRange = try segments.next(
+                in: raw, line: line, base: base, validateParentheses: false
+            ), !policyRange.isEmpty,
+            try segments.next(in: raw, line: line, base: base, validateParentheses: false) == nil else {
                 throw RuleParseError(.malformedLine, line: line, column: 1, "MATCH requires exactly TYPE,POLICY")
             }
-            let policyID = try sink.intern(raw.extracting(segments[1]), line: line, column: segments[1].lowerBound - base + 1)
+            let policyID = try sink.intern(raw.extracting(policyRange), line: line, column: policyRange.lowerBound - base + 1)
             sink.addMatch(policyID: policyID, ruleIndex: sink.nextRuleIndex)
             sink.commitLine()
             return
         }
 
-        guard segments.count >= 3, !segments[1].isEmpty, !segments[2].isEmpty else {
+        guard let arg = try segments.next(
+            in: raw, line: line, base: base, validateParentheses: false
+        ), !arg.isEmpty,
+        let policyRange = try segments.next(
+            in: raw, line: line, base: base, validateParentheses: false
+        ), !policyRange.isEmpty else {
             throw RuleParseError(.malformedLine, line: line, column: 1, "expected TYPE,ARG,POLICY")
         }
-        let arg = segments[1]
         let ruleIndex = sink.nextRuleIndex
 
         // Flags: only `no-resolve` is accepted, and only on IP-CIDR/GEOIP/RULE-SET rules.
@@ -195,7 +236,9 @@ struct RuleParser {
             break
         }
         var hasNoResolve = false
-        for flagRange in segments[3...] {
+        while let flagRange = try segments.next(
+            in: raw, line: line, base: base, validateParentheses: false
+        ) {
             if flagRange.isEmpty { continue }
             guard allowNoResolve, isNoResolve(raw, flagRange) else {
                 throw RuleParseError(
@@ -206,7 +249,7 @@ struct RuleParser {
             hasNoResolve = true
         }
 
-        let policyID = try sink.intern(raw.extracting(segments[2]), line: line, column: segments[2].lowerBound - base + 1)
+        let policyID = try sink.intern(raw.extracting(policyRange), line: line, column: policyRange.lowerBound - base + 1)
 
         switch kind {
         case .domain:
@@ -494,49 +537,36 @@ struct RuleParser {
         }
         if start == stop { return }
 
-        // Split comma segments respecting parentheses
-        var segments: [Range<Int>] = []
-        var cursor = start
-        var depth = 0
-        while cursor < stop {
-            var comma = cursor
-            while comma < stop {
-                let b = raw[comma]
-                if b == UInt8(ascii: "(") { depth += 1 }
-                else if b == UInt8(ascii: ")") && depth > 0 { depth -= 1 }
-                else if b == UInt8(ascii: ",") && depth == 0 { break }
-                comma += 1
-            }
-            var s = cursor, e = comma
-            while s < e && isInlineSpace(raw[s]) { s += 1 }
-            while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
-            segments.append(s..<e)
-            if comma >= stop { break }
-            cursor = comma + 1
-        }
-        if segments.isEmpty || segments[0].isEmpty { return }
+        var segments = CommaRangeScanner(start..<stop)
+        guard let typeRange = try segments.next(
+            in: raw, line: line, base: base, validateParentheses: false
+        ), !typeRange.isEmpty else { return }
 
-        if let kind = matchKind(raw, segments[0]) {
-            guard segments.count >= 2, !segments[1].isEmpty else {
+        if let kind = matchKind(raw, typeRange) {
+            guard let arg = try segments.next(
+                in: raw, line: line, base: base, validateParentheses: false
+            ), !arg.isEmpty else {
                 throw RuleParseError(.malformedLine, line: line, column: 1, "expected TYPE,ARG in rule-set")
             }
-            let arg = segments[1]
             var hasNoResolve = inheritedNoResolve
-            if segments.count >= 3 {
-                for seg in segments[2...] {
-                    if seg.isEmpty { continue }
-                    if isNoResolve(raw, seg) {
-                        hasNoResolve = true
-                    } else if segments.count == 3 {
-                        // Inline policy in rule-provider line (e.g. DOMAIN,foo.com,DIRECT); ignored
-                        continue
-                    } else {
-                        throw RuleParseError(
-                            .unknownFlag, line: line, column: seg.lowerBound - base + 1,
-                            "unsupported flag in rule-set"
-                        )
-                    }
+            var segmentCount = 2
+            var firstInvalidFlag: Range<Int>? = nil
+            while let seg = try segments.next(
+                in: raw, line: line, base: base, validateParentheses: false
+            ) {
+                segmentCount += 1
+                if seg.isEmpty { continue }
+                if isNoResolve(raw, seg) {
+                    hasNoResolve = true
+                } else if firstInvalidFlag == nil {
+                    firstInvalidFlag = seg
                 }
+            }
+            if segmentCount > 3, let seg = firstInvalidFlag {
+                throw RuleParseError(
+                    .unknownFlag, line: line, column: seg.lowerBound - base + 1,
+                    "unsupported flag in rule-set"
+                )
             }
 
             switch kind {
@@ -603,13 +633,15 @@ struct RuleParser {
             }
         } else {
             // Check for domain-only or ipcidr-only format (e.g. behavior: domain or behavior: ipcidr)
-            guard segments.count == 1 else {
+            guard try segments.next(
+                in: raw, line: line, base: base, validateParentheses: false
+            ) == nil else {
                 throw RuleParseError(
                     .unknownRuleType, line: line, column: 1,
-                    "unsupported rule type '\(toString(raw.extracting(segments[0])))'"
+                    "unsupported rule type '\(toString(raw.extracting(typeRange)))'"
                 )
             }
-            let token = segments[0]
+            let token = typeRange
             var hasSlash = false
             for i in token where raw[i] == UInt8(ascii: "/") {
                 hasSlash = true
@@ -967,20 +999,25 @@ struct RuleParser {
             throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (condition-list)")
         }
         let inner = (s + 1)..<(e - 1)
-        let childRanges = try splitCommaRanges(raw, inner, line: line, base: base)
-        guard childRanges.count >= 2 else {
+        var countScanner = CommaRangeScanner(inner)
+        var childCount = 0
+        while try countScanner.next(in: raw, line: line, base: base, validateParentheses: true) != nil {
+            childCount += 1
+        }
+        guard childCount >= 2 else {
             throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "\(isAnd ? "AND" : "OR") requires at least 2 conditions")
         }
-        var childIndices: [UInt32] = []
-        childIndices.reserveCapacity(childRanges.count)
-        for cr in childRanges {
+        let firstIndex = sink.reserveLogicChildIndices(count: childCount)
+        var childScanner = CommaRangeScanner(inner)
+        var childOffset: UInt32 = 0
+        while let cr = try childScanner.next(in: raw, line: line, base: base, validateParentheses: true) {
             let childNode = try parseCondition(raw, cr, line: line, base: base, into: &sink)
-            childIndices.append(childNode)
+            sink.setLogicChildIndex(childNode, at: firstIndex + childOffset)
+            childOffset += 1
         }
-        let firstIndex = sink.addLogicChildIndices(childIndices)
         return sink.addLogicNode(LogicNode(
             op: isAnd ? LogicOp.and.rawValue : LogicOp.or.rawValue,
-            childCount: UInt16(childIndices.count),
+            childCount: UInt16(childCount),
             firstChildIndex: firstIndex
         ))
     }
@@ -996,11 +1033,17 @@ struct RuleParser {
             throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (condition)")
         }
         let inner = (s + 1)..<(e - 1)
-        let childRanges = try splitCommaRanges(raw, inner, line: line, base: base)
-        guard childRanges.count == 1 else {
+        var childScanner = CommaRangeScanner(inner)
+        var childRange: Range<Int>? = nil
+        var childCount = 0
+        while let part = try childScanner.next(in: raw, line: line, base: base, validateParentheses: true) {
+            if childCount == 0 { childRange = part }
+            childCount += 1
+        }
+        guard childCount == 1, let childRange else {
             throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "NOT requires exactly 1 condition")
         }
-        let childNode = try parseCondition(raw, childRanges[0], line: line, base: base, into: &sink)
+        let childNode = try parseCondition(raw, childRange, line: line, base: base, into: &sink)
         return sink.addLogicNode(LogicNode(
             op: LogicOp.not.rawValue,
             childCount: 1,
@@ -1038,19 +1081,26 @@ struct RuleParser {
             throw RuleParseError(.invalidArgument, line: line, column: s - base + 1, "empty condition")
         }
 
-        let parts = try splitCommaRanges(raw, s..<e, line: line, base: base)
-        guard parts.count >= 2 else {
+        var partsScanner = CommaRangeScanner(s..<e)
+        var partCount = 0
+        var typeRange: Range<Int>? = nil
+        var argRange: Range<Int>? = nil
+        while let part = try partsScanner.next(in: raw, line: line, base: base, validateParentheses: true) {
+            if partCount == 0 { typeRange = part }
+            else if partCount == 1 { argRange = part }
+            partCount += 1
+        }
+        guard partCount >= 2, let typeRange, let arg = argRange else {
             throw RuleParseError(.malformedLine, line: line, column: s - base + 1, "expected (TYPE,ARG) condition")
         }
 
-        guard let kind = matchKind(raw, parts[0]) else {
+        guard let kind = matchKind(raw, typeRange) else {
             throw RuleParseError(
-                .unknownRuleType, line: line, column: parts[0].lowerBound - base + 1,
-                "unsupported rule type '\(toString(raw.extracting(parts[0])))' in condition"
+                .unknownRuleType, line: line, column: typeRange.lowerBound - base + 1,
+                "unsupported rule type '\(toString(raw.extracting(typeRange)))' in condition"
             )
         }
 
-        let arg = parts[1]
         switch kind {
         case .and:
             return try parseAndOrCondition(raw, arg, isAnd: true, line: line, base: base, into: &sink)
@@ -1134,40 +1184,7 @@ struct RuleParser {
             let code = try parseGeoIP(raw, arg, line: line, base: base)
             return sink.addLogicNode(LogicNode(op: LogicOp.geoIP.rawValue, countryCode: code))
         case .subRule, .match, .ruleSet:
-            throw RuleParseError(.malformedLine, line: line, column: parts[0].lowerBound - base + 1, "cannot nest \(toString(raw.extracting(parts[0]))) inside condition")
+            throw RuleParseError(.malformedLine, line: line, column: typeRange.lowerBound - base + 1, "cannot nest \(toString(raw.extracting(typeRange))) inside condition")
         }
-    }
-
-    private static func splitCommaRanges(
-        _ raw: Span<UInt8>, _ r: Range<Int>, line: Int, base: Int
-    ) throws(RuleParseError) -> [Range<Int>] {
-        var segments: [Range<Int>] = []
-        var cursor = r.lowerBound
-        var depth = 0
-        while cursor < r.upperBound {
-            var comma = cursor
-            while comma < r.upperBound {
-                let b = raw[comma]
-                if b == UInt8(ascii: "(") { depth += 1 }
-                else if b == UInt8(ascii: ")") {
-                    guard depth > 0 else {
-                        throw RuleParseError(.malformedLine, line: line, column: comma - base + 1, "unmatched ')'")
-                    }
-                    depth -= 1
-                }
-                else if b == UInt8(ascii: ",") && depth == 0 { break }
-                comma += 1
-            }
-            guard depth == 0 else {
-                throw RuleParseError(.malformedLine, line: line, column: cursor - base + 1, "unclosed '('")
-            }
-            var s = cursor, e = comma
-            while s < e && isInlineSpace(raw[s]) { s += 1 }
-            while e > s && isInlineSpace(raw[e - 1]) { e -= 1 }
-            segments.append(s..<e)
-            if comma >= r.upperBound { break }
-            cursor = comma + 1
-        }
-        return segments
     }
 }
