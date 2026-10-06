@@ -14,6 +14,35 @@ private func v6(_ hex: String) -> UInt128 {
     UInt128(hex, radix: 16)!
 }
 
+@Suite struct IPAddressParsingTests {
+    @Test func parsesIPv4WithoutChangingByteOrder() {
+        #expect(parseIPAddress("0.0.0.0") == UInt128(0))
+        #expect(parseIPAddress("10.0.0.1") == UInt128(0x0A00_0001))
+        #expect(parseIPAddress("255.255.255.255") == UInt128(UInt32.max))
+    }
+
+    @Test func parsesFullAndCompressedIPv6() {
+        let expanded = v6("20010db8000000000000000000000001")
+        #expect(parseIPAddress("2001:db8:0:0:0:0:0:1") == expanded)
+        #expect(parseIPAddress("2001:db8::1") == expanded)
+        #expect(parseIPAddress("2001:DB8::1") == expanded)
+        #expect(parseIPAddress("1::2:3") == v6("00010000000000000000000000020003"))
+        #expect(parseIPAddress("::") == UInt128(0))
+        #expect(parseIPAddress("::1") == UInt128(1))
+        #expect(parseIPAddress("1::") == v6("00010000000000000000000000000000"))
+    }
+
+    @Test func rejectsMalformedAddressesAndOverflow() {
+        for address in [
+            "", "1.2.3", "1.2.3.4.5", "1.2.3.256", "4294967296.0.0.1",
+            "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "1::2::3",
+            "1:2:3:4:5:6:7::8", ":1:2:3:4:5:6:7", "2001:db8::g",
+        ] {
+            #expect(parseIPAddress(address) == nil, "accepted invalid IP: \(address)")
+        }
+    }
+}
+
 private func matchDomain(
     _ matcher: Matcher,
     _ domain: String,
