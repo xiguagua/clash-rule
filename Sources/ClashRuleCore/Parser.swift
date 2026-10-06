@@ -344,7 +344,6 @@ struct RuleParser {
         column: Int,
         payload: (Span<UInt8>) throws(RuleParseError) -> Void
     ) throws(RuleParseError) {
-        let display = String(decoding: name, as: UTF8.self)
         var invocations = 0
         // 由解析器侧（payload 或重复调用检查）产生的错误；与 resolver 自身的错误区分开。
         var parserError: RuleParseError? = nil
@@ -359,7 +358,7 @@ struct RuleParser {
                     guard invocations == 1 else {
                         let err = RuleParseError(
                             .invalidRuleSetResolver, line: line, column: column,
-                            "resolver invoked body more than once for rule-set '\(display)'"
+                            "resolver invoked body more than once for rule-set '\(String(decoding: name, as: UTF8.self))'"
                         )
                         parserError = err
                         throw err
@@ -376,7 +375,7 @@ struct RuleParser {
             if let parserError { throw parserError }
             throw RuleParseError(
                 error.code, line: line, column: column,
-                "rule-set '\(display)': \(error.detail)"
+                "rule-set '\(String(decoding: name, as: UTF8.self))': \(error.detail)"
             )
         }
 
@@ -387,16 +386,19 @@ struct RuleParser {
         case (true, 1):
             return
         case (false, 0):
-            throw RuleParseError(.unknownRuleSet, line: line, column: column, "rule-set '\(display)' not found")
+            throw RuleParseError(
+                .unknownRuleSet, line: line, column: column,
+                "rule-set '\(String(decoding: name, as: UTF8.self))' not found"
+            )
         case (true, _):
             throw RuleParseError(
                 .invalidRuleSetResolver, line: line, column: column,
-                "resolver returned true without supplying bytes for rule-set '\(display)'"
+                "resolver returned true without supplying bytes for rule-set '\(String(decoding: name, as: UTF8.self))'"
             )
         case (false, _):
             throw RuleParseError(
                 .invalidRuleSetResolver, line: line, column: column,
-                "resolver supplied bytes but returned false for rule-set '\(display)'"
+                "resolver supplied bytes but returned false for rule-set '\(String(decoding: name, as: UTF8.self))'"
             )
         }
     }

@@ -215,16 +215,18 @@ extension RuleSink {
         let srcIPv6Array = flattenIPNodes(srcIPv6)
 
         // Ports.
-        var portArray = ContiguousArray(portMap.values.map { entry in
-            PortEntry(
+        var portArray = ContiguousArray<PortEntry>()
+        portArray.reserveCapacity(portMap.count)
+        for entry in portMap.values {
+            portArray.append(PortEntry(
                 low: entry.low,
                 high: entry.high,
                 dstPolicy: entry.dstPolicy == UInt16.max ? 0 : entry.dstPolicy,
                 dstRule: entry.dstRule,
                 srcPolicy: entry.srcPolicy == UInt16.max ? 0 : entry.srcPolicy,
                 srcRule: entry.srcRule
-            )
-        })
+            ))
+        }
         portArray.sort { a, b in
             if a.low != b.low { return a.low < b.low }
             return a.high < b.high
@@ -353,8 +355,12 @@ public enum RuleCompiler {
         _ input: RawSpan,
         ruleSets: [String: String]
     ) throws(RuleParseError) -> CompiledRules {
-        let byteSets = ruleSets.mapValues { Array($0.utf8) }
-        return try compile(input, ruleSets: byteSets)
+        var byteMap: [[UInt8]: [UInt8]] = [:]
+        byteMap.reserveCapacity(ruleSets.count)
+        for (name, contents) in ruleSets {
+            byteMap[[UInt8](name.utf8)] = [UInt8](contents.utf8)
+        }
+        return try compile(input, byteRuleSets: byteMap)
     }
 
     /// Convenience overload taking an in-memory dictionary of byte-array rule sets.
@@ -367,8 +373,15 @@ public enum RuleCompiler {
         for (k, v) in ruleSets {
             byteMap[[UInt8](k.utf8)] = v
         }
+        return try compile(input, byteRuleSets: byteMap)
+    }
+
+    private static func compile(
+        _ input: RawSpan,
+        byteRuleSets: [[UInt8]: [UInt8]]
+    ) throws(RuleParseError) -> CompiledRules {
         var sink = RuleSink()
-        try RuleParser.parse(Span(viewing: input), byteRuleSets: byteMap, into: &sink)
+        try RuleParser.parse(Span(viewing: input), byteRuleSets: byteRuleSets, into: &sink)
         return sink.finish()
     }
 }

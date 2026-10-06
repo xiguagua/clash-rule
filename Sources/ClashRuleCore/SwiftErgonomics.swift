@@ -12,11 +12,10 @@ extension RuleCompiler {
         _ text: String,
         ruleSets: [String: String] = [:]
     ) throws -> CompiledRules {
-        let bytes = Array(text.utf8)
         if ruleSets.isEmpty {
-            return try compile(bytes.span.bytes)
+            return try compile(text.utf8.span.bytes)
         } else {
-            return try compile(bytes.span.bytes, ruleSets: ruleSets)
+            return try compile(text.utf8.span.bytes, ruleSets: ruleSets)
         }
     }
 }
@@ -129,8 +128,9 @@ extension Matcher {
     /// let policy: String? = matcher.policy(forDomain: "www.example.com")
     /// let policy2: String? = matcher.policy(forIP: "10.1.2.3", port: 443)
     /// ```
-    /// - Note: 每次调用会有一次 UTF-8 转字节分配。超高频场景请复用
-    ///   `[UInt8]` 缓冲并直接调用 `match(domain: buffer.span)` 热路径接口。
+    /// - Note: 域名和进程名直接以 UTF-8 span 传入，不显式创建字节数组；IP
+    ///   字符串解析和策略名字符串返回仍可能分配。超高频场景请复用 `[UInt8]`
+    ///   缓冲，并直接调用 `match(domain: buffer.span)` 热路径接口。
     public func policy(
         forDomain domain: String = "",
         targetIP: String? = nil,
@@ -165,18 +165,27 @@ extension Matcher {
         network: NetworkProtocol? = nil,
         country: String? = nil
     ) -> MatchResult? {
-        let domainBytes = Array(domain.utf8)
-        let processBytes = processName.map { Array($0.utf8) } ?? []
         let targetAddress = targetIP.flatMap(parseIPAddress)
         let sourceAddress = sourceIP.flatMap(parseIPAddress)
         let countryCode: UInt32 = country.map(packCountryCode) ?? 0
+        if let processName {
+            return match(
+                domain: domain.utf8.span,
+                targetAddress: targetAddress,
+                targetPort: targetPort,
+                sourceAddress: sourceAddress,
+                sourcePort: sourcePort,
+                processName: processName.utf8.span,
+                network: network,
+                countryCode: countryCode
+            )
+        }
         return match(
-            domain: domainBytes.span,
+            domain: domain.utf8.span,
             targetAddress: targetAddress,
             targetPort: targetPort,
             sourceAddress: sourceAddress,
             sourcePort: sourcePort,
-            processName: processBytes.span,
             network: network,
             countryCode: countryCode
         )
