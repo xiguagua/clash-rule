@@ -12,11 +12,27 @@ let package = Package(
     ],
     products: [
         .library(name: "ClashRuleCore", targets: ["ClashRuleCore"]),
+        .library(
+            name: "ClashRuleCAPI",
+            targets: ["ClashRuleCAPI", "ClashRuleCAPIHeader"]
+        ),
         .executable(name: "ClashRuleBenchmark", targets: ["ClashRuleBenchmark"]),
     ],
     targets: [
         .target(
             name: "ClashRuleCore",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ClashRuleCAPIHeader",
+            path: "Sources/ClashRuleCAPIHeader",
+            publicHeadersPath: "include"
+        ),
+        .target(
+            name: "ClashRuleCAPI",
+            dependencies: ["ClashRuleCore", "ClashRuleCAPIHeader"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
@@ -31,6 +47,19 @@ let package = Package(
         .testTarget(
             name: "ClashRuleCoreTests",
             dependencies: ["ClashRuleCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ClashRuleCAPITestSupport",
+            dependencies: ["ClashRuleCAPI", "ClashRuleCAPIHeader"],
+            path: "Tests/ClashRuleCAPITestSupport",
+            publicHeadersPath: "include"
+        ),
+        .testTarget(
+            name: "ClashRuleCAPITests",
+            dependencies: ["ClashRuleCAPITestSupport"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

@@ -21,9 +21,10 @@
     - 实现**成本分层求值与有界短路剪枝（Cost-Tiered Staged Evaluation with Bounded Short-Circuit Pruning）**：通过 `CategoryBounds` 维护各类别最低出现行号，将无脑全类别仲裁演进为 4 级求值剪枝；100k 下实测 Exact 命中 62.6ns、Suffix 144.7ns、IPv4/IPv6 120.1/196.9ns、Port/Process/GeoIP 均 < 100ns（Process 84.1ns）；
     - 编译期与热路径优化（`append(copying:)` 批量操作、`span[unchecked:]` 消除边界检查、struct arena trie、免排序拍平、`ByteKey` 预存哈希、`matchKind` 字节分发）：100k 编译 164ms → 74.7ms（-54%）；
     - 100k 实测（同机 release，Span 架构）：快照 5.08MB vs Go 堆增量 24.50MB（**节省 79%**）；混合吞吐 27.5k vs 10.1k ops/s（**2.7x**）；全 miss 最坏 169.5μs vs 1027.6μs（**6.1x**）；10/10 查询策略与 oracle 100% 一致。口径说明：mihomo 解析只做 append-to-slice（代价递延到匹配时顺序扫描），按 TCO 对标约 350 个混合查询回本（多付 21.4ms 加载，每查询省 65.6μs），详见 §7。
-- **测试现状**：74 项测试（72 项单元测试 + 2 项 Golden 集成套件）全部通过（`swift test`），零堆分配断言正常；`RuleSetResolverTests` 覆盖 resolver 正常/嵌套/未找到/循环/宿主失败/内容错误传播及 4 种违约情形。
+- **M4（C ABI 最小可用版）**：新增 `ClashRuleCAPI` Swift target，以正式 `@c` 导出 `create` / `destroy` / `match` / `policy_name`；提供 `clash_rule.h` 和稳定的 C 请求/错误结构，C 调用方烟雾测试覆盖编译、匹配、policy 名读取及解析错误行号。当前不支持从 C 注入外部 `RULE-SET` resolver。
+- **测试现状**：`swift test` 通过（75 项 Core 测试 + 2 项 Golden 集成测试 + 1 项 C consumer 烟雾测试）；Matcher 零堆分配断言正常；`RuleSetResolverTests` 覆盖 resolver 正常/嵌套/未找到/循环/宿主失败/内容错误传播及 4 种违约情形。
 - **后续规划**：
-  - M4：`ClashRuleCAPI` 稳定 C ABI 导出（`@c`）、头文件生成、CLI 工具；
+  - M4 收尾：CLI 工具、Go cgo 示例及跨平台 C ABI 链接验证；
   - M5 收尾：CI 性能门禁与自动化回归。
 
 ---

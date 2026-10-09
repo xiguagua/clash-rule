@@ -63,10 +63,13 @@ public struct CompiledRules: Sendable {
 
     public var ruleCount: Int
 
+    /// Number of interned policy names. Useful for validating handles at API boundaries.
+    public var policyCount: Int { policyNameRefs.count }
+
     /// Total heap memory occupied by flat POD arrays and arenas in bytes.
     public var approximateMemoryBytes: Int {
         var total = 0
-        total += policyRangesArr.count * MemoryLayout<PolicyRange>.stride
+        total += policyNameRefs.count * MemoryLayout<PolicyNameRef>.stride
         total += policyArena.count
         total += exactKeys.count
         total += exactEntries.count * MemoryLayout<ExactEntry>.stride
@@ -91,12 +94,22 @@ public struct CompiledRules: Sendable {
         return total
     }
 
-    /// Diagnostic convenience — allocates a `String`. Never use in the hot path.
-    public func policyName(_ id: UInt16) -> String {
+    /// Accesses the interned policy name as borrowed UTF-8 bytes without heap allocation.
+    public func withPolicyNameBytes<R>(_ id: UInt16, _ body: (Span<UInt8>) -> R) -> R {
         precondition(Int(id) < policyNameRefs.count, "policyID out of range")
         let ref = policyNameRefs[Int(id)]
         let start = Int(ref.offset)
-        return String(decoding: policyArena[start..<(start + Int(ref.length))], as: UTF8.self)
+        let end = start + Int(ref.length)
+        return policyArena.withUnsafeBufferPointer { buffer in
+            body(Span(_unsafeElements: UnsafeBufferPointer(rebasing: buffer[start..<end])))
+        }
+    }
+
+    /// Diagnostic convenience — allocates a `String`. Never use in the hot path.
+    public func policyName(_ id: UInt16) -> String {
+        withPolicyNameBytes(id) { span in
+            span.withUnsafeBufferPointer { String(decoding: $0, as: UTF8.self) }
+        }
     }
 }
 
