@@ -47,6 +47,23 @@ int32_t clash_rule_capi_smoke_test(void) {
 
     clash_rule_engine_destroy(engine);
 
+    /* 安全性验证 1：Double-destroy 必须安全防御，不崩溃 */
+    clash_rule_engine_destroy(engine);
+
+    /* 安全性验证 2：UAF 访问已释放的句柄必须被识别并返回 INVALID_ARGUMENT */
+    if (clash_rule_engine_match(engine, &request, &policy_id, &rule_index) != CLASH_RULE_STATUS_INVALID_ARGUMENT) {
+        return 8;
+    }
+    if (clash_rule_engine_policy_name(engine, policy_id, name, sizeof(name), &name_length) != CLASH_RULE_STATUS_INVALID_ARGUMENT) {
+        return 9;
+    }
+
+    /* 安全性验证 3：NULL 句柄必须安全处理 */
+    if (clash_rule_engine_match(NULL, &request, &policy_id, &rule_index) != CLASH_RULE_STATUS_INVALID_ARGUMENT) {
+        return 10;
+    }
+    clash_rule_engine_destroy(NULL);
+
     static const uint8_t invalid_rules[] = "DOMAIN,example.com\n";
     engine = clash_rule_engine_create(invalid_rules, sizeof(invalid_rules) - 1, &error);
     if (engine != NULL || error.code != CLASH_RULE_ERROR_MALFORMED_LINE || error.line != 1) {

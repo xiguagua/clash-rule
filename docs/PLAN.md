@@ -22,7 +22,7 @@
     - 编译期与热路径优化（`append(copying:)` 批量操作、`span[unchecked:]` 消除边界检查、struct arena trie、免排序拍平、`ByteKey` 预存哈希、`matchKind` 字节分发）：100k 编译 164ms → 74.7ms（-54%）；
     - 100k 实测（同机 release，Span 架构）：快照 5.08MB vs Go 堆增量 24.50MB（**节省 79%**）；混合吞吐 27.5k vs 10.1k ops/s（**2.7x**）；全 miss 最坏 169.5μs vs 1027.6μs（**6.1x**）；10/10 查询策略与 oracle 100% 一致。口径说明：mihomo 解析只做 append-to-slice（代价递延到匹配时顺序扫描），按 TCO 对标约 350 个混合查询回本（多付 21.4ms 加载，每查询省 65.6μs），详见 §7。
 - **M4（C ABI 最小可用版）**：新增 `ClashRuleCAPI` Swift target，以正式 `@c` 导出 `create` / `destroy` / `match` / `policy_name`；提供 `clash_rule.h` 和稳定的 C 请求/错误结构，C 调用方烟雾测试覆盖编译、匹配、policy 名读取及解析错误行号。当前不支持从 C 注入外部 `RULE-SET` resolver。
-- **测试现状**：`swift test` 通过（75 项 Core 测试 + 2 项 Golden 集成测试 + 1 项 C consumer 烟雾测试）；Matcher 零堆分配断言正常；`RuleSetResolverTests` 覆盖 resolver 正常/嵌套/未找到/循环/宿主失败/内容错误传播及 4 种违约情形。
+- **测试现状**：`swift test` 通过（75 项 Core 测试 + 2 项 Golden 集成测试 + 5 项 C API 句柄安全测试与 C consumer 烟雾测试）；Matcher 零堆分配断言正常；`RuleSetResolverTests` 覆盖 resolver 正常/嵌套/未找到/循环/宿主失败/内容错误传播及 4 种违约情形。
 - **后续规划**：
   - M4 收尾：CLI 工具、Go cgo 示例及跨平台 C ABI 链接验证；
   - M5 收尾：CI 性能门禁与自动化回归。
@@ -324,7 +324,7 @@ clash_rule_status clash_rule_engine_policy_name(
 ### 5.3 Swift/C 互操作实现（Swift 6.3）
 
 - 用 Swift 6.3 的 **`@c` 属性**（取代非正式的 `@_cdecl`）导出 C 符号，头文件随包分发（SE-0541 Flexible Swift/C Interoperability for Packages）。
-- 生命周期：`create` / `destroy` 手动，文档标注非线程安全的创建 + 线程安全的 match（不可变快照）。可选用 SE-0544（non-Copyable deinit 中的消费）把 Swift 侧 handle 建成 `~Copyable` 类型，destroy 语义交给编译器，C 侧仍手动。
+- 生命周期：C 侧手动 `create` / `destroy`，内部由 `EngineBox` 携带 ASCII 魔数（`0x434C5348`）校验并在销毁时毒化（`0xDEADBEEF`），杜绝野指针、UAF 和 Double-Free 崩溃；Swift 侧 handle 实现为 `ClashRuleEngine: ~Copyable`（SE-0544 `intoRawHandle` 消费所有权，`deinit` 自动回收），实现 RAII 级绝对内存安全。
 
 ### 5.4 SwiftPM 结构
 

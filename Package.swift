@@ -59,7 +59,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ClashRuleCAPITests",
-            dependencies: ["ClashRuleCAPITestSupport"],
+            dependencies: [
+                "ClashRuleCAPI",
+                "ClashRuleCore",
+                "ClashRuleCAPITestSupport",
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

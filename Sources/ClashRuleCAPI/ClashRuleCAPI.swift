@@ -37,6 +37,77 @@ private func parseAddress(hasAddress: UInt8, high: UInt64, low: UInt64) -> UInt1
     hasAddress == 1 ? (UInt128(high) << 64) | UInt128(low) : nil
 }
 
+private let CLASH_RULE_MAGIC: UInt32 = 0x434C5348      // ASCII "CLSH"
+private let CLASH_RULE_DEAD_MAGIC: UInt32 = 0xDEADBEEF // Poisoned marker
+
+struct EngineBox: Sendable {
+    var magic: UInt32
+    var rules: CompiledRules
+}
+
+@inline(__always)
+func validatedBox(_ engine: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<EngineBox>? {
+    guard let engine else { return nil }
+    guard Int(bitPattern: engine) & (MemoryLayout<EngineBox>.alignment - 1) == 0 else {
+        return nil
+    }
+    let box = engine.assumingMemoryBound(to: EngineBox.self)
+    guard box.pointee.magic == CLASH_RULE_MAGIC else {
+        return nil
+    }
+    return box
+}
+
+/// Safe, non-copyable RAII handle for the compiled rule engine.
+///
+/// Owns the underlying engine storage and automatically cleans it up via `deinit`,
+/// completely eliminating manual leaks and double-free hazards in Swift.
+public struct ClashRuleEngine: ~Copyable, @unchecked Sendable {
+    private var pointer: UnsafeMutablePointer<EngineBox>?
+
+    public init(rules: CompiledRules) {
+        let ptr = UnsafeMutablePointer<EngineBox>.allocate(capacity: 1)
+        ptr.initialize(to: EngineBox(magic: CLASH_RULE_MAGIC, rules: rules))
+        self.pointer = ptr
+    }
+
+    deinit {
+        if let ptr = pointer {
+            ptr.pointee.magic = CLASH_RULE_DEAD_MAGIC
+            ptr.deinitialize(count: 1)
+            ptr.deallocate()
+        }
+    }
+
+    /// Accesses the compiled rules from the safe engine handle.
+    public var rules: CompiledRules {
+        guard let ptr = pointer, ptr.pointee.magic == CLASH_RULE_MAGIC else {
+            fatalError("Attempted to access an invalidated ClashRuleEngine handle")
+        }
+        return ptr.pointee.rules
+    }
+
+    /// Transfers ownership of the engine to a raw C ABI pointer (`clash_rule_engine_t`),
+    /// consuming this safe handle and delegating lifetime destruction to `clash_rule_engine_destroy`.
+    public consuming func intoRawHandle() -> UnsafeMutableRawPointer {
+        guard let ptr = pointer else { fatalError("ClashRuleEngine handle already consumed") }
+        let raw = UnsafeMutableRawPointer(ptr)
+        discard self
+        return raw
+    }
+
+    /// Adopts ownership of a raw C ABI engine pointer into a safe RAII handle.
+    /// Returns `nil` if the handle pointer is invalid, null, or has already been destroyed.
+    public static func fromRawHandle(_ raw: UnsafeMutableRawPointer?) -> ClashRuleEngine? {
+        guard let box = validatedBox(raw) else { return nil }
+        return ClashRuleEngine(adopting: box)
+    }
+
+    private init(adopting ptr: UnsafeMutablePointer<EngineBox>) {
+        self.pointer = ptr
+    }
+}
+
 @c
 public func clash_rule_engine_create(
     _ ruleData: UnsafePointer<UInt8>?,
@@ -58,17 +129,16 @@ public func clash_rule_engine_create(
         return nil
     }
 
-    let storage = UnsafeMutablePointer<CompiledRules>.allocate(capacity: 1)
-    storage.initialize(to: rules)
-    return UnsafeMutableRawPointer(storage)
+    let engine = ClashRuleEngine(rules: rules)
+    return engine.intoRawHandle()
 }
 
 @c
 public func clash_rule_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
-    guard let engine else { return }
-    let storage = engine.assumingMemoryBound(to: CompiledRules.self)
-    storage.deinitialize(count: 1)
-    storage.deallocate()
+    guard let box = validatedBox(engine) else { return }
+    box.pointee.magic = CLASH_RULE_DEAD_MAGIC
+    box.deinitialize(count: 1)
+    box.deallocate()
 }
 
 @c
@@ -78,7 +148,7 @@ public func clash_rule_engine_match(
     _ outPolicyID: UnsafeMutablePointer<UInt16>?,
     _ outRuleIndex: UnsafeMutablePointer<UInt32>?
 ) -> Int32 {
-    guard let engine, let request, let outPolicyID, let outRuleIndex else {
+    guard let box = validatedBox(engine), let request, let outPolicyID, let outRuleIndex else {
         return status(CLASH_RULE_STATUS_INVALID_ARGUMENT)
     }
     outPolicyID.pointee = 0
@@ -112,8 +182,7 @@ public func clash_rule_engine_match(
     let processName = Span(_unsafeElements: UnsafeBufferPointer(start: value.process_name, count: value.process_name_length))
     let processPath = Span(_unsafeElements: UnsafeBufferPointer(start: value.process_path, count: value.process_path_length))
 
-    let storage = engine.assumingMemoryBound(to: CompiledRules.self)
-    let result = Matcher(storage.pointee).match(
+    let result = Matcher(box.pointee.rules).match(
         domain: domain,
         targetAddress: parseAddress(
             hasAddress: value.has_target_address,
@@ -148,7 +217,7 @@ public func clash_rule_engine_policy_name(
     _ capacity: UInt,
     _ outLength: UnsafeMutablePointer<UInt>?
 ) -> Int32 {
-    guard let engine, let outLength, let bufferCapacity = Int(exactly: capacity) else {
+    guard let box = validatedBox(engine), let outLength, let bufferCapacity = Int(exactly: capacity) else {
         return status(CLASH_RULE_STATUS_INVALID_ARGUMENT)
     }
     outLength.pointee = 0
@@ -156,12 +225,11 @@ public func clash_rule_engine_policy_name(
         return status(CLASH_RULE_STATUS_INVALID_ARGUMENT)
     }
 
-    let storage = engine.assumingMemoryBound(to: CompiledRules.self)
-    guard Int(policyID) < storage.pointee.policyCount else {
+    guard Int(policyID) < box.pointee.rules.policyCount else {
         return status(CLASH_RULE_STATUS_INVALID_ARGUMENT)
     }
 
-    return storage.pointee.withPolicyNameBytes(policyID) { bytes in
+    return box.pointee.rules.withPolicyNameBytes(policyID) { bytes in
         outLength.pointee = UInt(bytes.count)
         if bufferCapacity == 0 && outName == nil {
             return status(CLASH_RULE_STATUS_OK)
