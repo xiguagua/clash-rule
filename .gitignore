@@ -16,5 +16,6 @@ DerivedData/
 
 # Benchmarks / coverage artifacts
 .benchmarks/
+Tools/benchmark/bin/
 *.gcda
 *.lcov

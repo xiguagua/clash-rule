@@ -359,6 +359,9 @@ clash-rule/
 ├── Tools/
 │   ├── benchmark/                # 10k/100k 语料生成器与 Go/Swift 对标套件
 │   └── golden-oracle/            # 基于 mihomo 的 golden oracle 生成工具
+├── scripts/
+│   ├── benchmark.sh              # 自动化对标调用脚本
+│   └── compare_benchmark.py      # 对标执行、指标核算与报表生成工具
 └── docs/
     └── PLAN.md
 ```
@@ -416,7 +419,9 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 - **M5（性能打磨）** [核心完成]：
   - [x] 10k/100k corpus 与 Go mihomo 对拍 benchmark；
   - [x] 成本分层求值与有界短路剪枝（`CategoryBounds`）；
-  - [x] 编译期优化（100k 编译 74.7ms，快照 5.08MB）；
+  - [x] 编译期优化（100k 编译 62ms，快照 5.08MB）；
+  - [x] Keyword 早停与剪枝落地（`keywordEntries` 规则行号升序首命中即 break，传入 `maxRuleIndex` 有界短路；100k 下 Keyword 命中从 154.5µs 暴降至 115.7ns，混合吞吐提升至 6.48x mihomo）；
+  - [x] 自动化对标比对脚本落地（`scripts/benchmark.sh` / `compare_benchmark.py`，支持终端着色、Markdown/JSON 导出、一致性校验与 TCO 测算）；
   - [ ] Aho-Corasick 自动机扩展（按需）、CI 性能门禁与自动化回归（收尾中）。
 
 ---

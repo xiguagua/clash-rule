@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/rules"
 )
 
@@ -164,6 +165,7 @@ func main() {
 	matchIters := flag.Int("iters", 50000, "Match iterations per query")
 	jsonOutput := flag.Bool("json", false, "Output results in JSON format")
 	flag.Parse()
+	log.SetLevel(log.SILENT)
 
 	content, err := os.ReadFile(*ruleFile)
 	if err != nil {

@@ -200,7 +200,7 @@ public struct CompiledRules: Sendable {
 
 extension RuleSink {
     /// Freeze everything into the immutable snapshot.
-    func finish() -> CompiledRules {
+    mutating func finish() -> CompiledRules {
         let policyNameRefArray = ContiguousArray(policyNameRefs)
         let policyArenaBytes = policyArena.bytes
 
@@ -333,9 +333,11 @@ extension RuleSink {
             portArray[i].maxHigh = runningMax
         }
 
-        // Keywords.
+        // Keywords (sorted by ruleIndex ascending for early exit and pruning).
+        keywords.sort { $0.rule < $1.rule }
         var keywordArenaBytes = ByteArena()
         var keywordArray = ContiguousArray<KeywordEntry>()
+        keywordArray.reserveCapacity(keywords.count)
         for entry in keywords {
             let keyOffset = keywordArenaBytes.append(entry.key)
             keywordArray.append(KeywordEntry(

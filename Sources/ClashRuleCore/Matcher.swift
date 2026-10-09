@@ -144,9 +144,9 @@ public struct Matcher: Sendable {
             }
         }
 
-        // Tier 3: Keyword Search (linear scan or future AC automaton)
+        // Tier 3: Keyword Search (linear scan with ruleIndex early exit & pruning)
         if domain.count > 0 && collector.bestRule > bounds.minKeywordRule {
-            collector.consider(rules.lookupKeyword(domain))
+            collector.consider(rules.lookupKeyword(domain, maxRuleIndex: collector.bestRule))
             if collector.isOptimal { return collector.finish() }
         }
 
@@ -320,25 +320,35 @@ extension CompiledRules {
         return best
     }
 
-    func lookupKeyword(_ domain: Span<UInt8>) -> (policy: UInt16, rule: UInt32)? {
+    func lookupKeyword(_ domain: Span<UInt8>, maxRuleIndex: UInt32 = UInt32.max) -> (policy: UInt16, rule: UInt32)? {
         guard !keywordEntries.isEmpty, domain.count > 0 else { return nil }
-        var best: (policy: UInt16, rule: UInt32)? = nil
-        entryLoop: for entry in keywordEntries {
+        for entry in keywordEntries {
+            // Early prune: since keywordEntries are strictly sorted by ruleIndex ascending,
+            // once entry.ruleIndex >= maxRuleIndex, no subsequent entry can beat maxRuleIndex.
+            guard entry.ruleIndex < maxRuleIndex else { break }
+
             let needleLength = Int(entry.keyLength)
             guard domain.count >= needleLength else { continue }
             let keyStart = Int(entry.keyOffset)
+            let firstNeedleByte = keywordArena[keyStart]
+            let maxStart = domain.count - needleLength
             var start = 0
-            while start <= domain.count - needleLength {
-                var k = 0
-                while k < needleLength && lowerByte(domain[unchecked: start + k]) == keywordArena[keyStart + k] { k += 1 }
-                if k == needleLength {
-                    if best == nil || entry.ruleIndex < best!.rule { best = (entry.policyID, entry.ruleIndex) }
-                    continue entryLoop
+            while start <= maxStart {
+                if lowerByte(domain[unchecked: start]) == firstNeedleByte {
+                    var k = 1
+                    while k < needleLength && lowerByte(domain[unchecked: start + k]) == keywordArena[keyStart + k] {
+                        k += 1
+                    }
+                    if k == needleLength {
+                        // Early exit: because keywordEntries are sorted by ruleIndex ascending,
+                        // the FIRST matching entry is guaranteed to have the minimum ruleIndex.
+                        return (entry.policyID, entry.ruleIndex)
+                    }
                 }
                 start += 1
             }
         }
-        return best
+        return nil
     }
 
     func lookupAddress(_ address: UInt128) -> (policy: UInt16, rule: UInt32)? {
