@@ -16,13 +16,24 @@ func lexLess(_ a: [UInt8], _ b: [UInt8]) -> Bool {
     return a.count < b.count
 }
 
+/// FNV-1a 64-bit 参数。编译期（Compiler.swift）与查询期共用，改动必须同时作用于两端。
+enum FNV1a {
+    static let offsetBasis: UInt64 = 0xcbf2_9ce4_8422_2325
+    static let prime: UInt64 = 0x0000_0100_0000_01B3
+
+    @inline(__always)
+    static func step(_ hash: UInt64, _ lowered: UInt8) -> UInt64 {
+        (hash ^ UInt64(lowered)) &* prime
+    }
+}
+
 /// FNV-1a 64-bit. Deliberately not `Hashable`'s seeded hash: index structures
 /// must build deterministically (docs/PLAN.md §4).
 func fnv1a(_ bytes: Span<UInt8>) -> UInt64 {
-    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    var h = FNV1a.offsetBasis
     let count = bytes.count
     for i in 0..<count {
-        h = (h ^ UInt64(lowerByte(bytes[unchecked: i]))) &* 0x100000001b3
+        h = FNV1a.step(h, lowerByte(bytes[unchecked: i]))
     }
     return h
 }

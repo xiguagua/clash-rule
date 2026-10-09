@@ -41,11 +41,11 @@ private func lowerKey(_ span: Span<UInt8>) -> ByteKey {
     var out = [UInt8]()
     let count = span.count
     out.reserveCapacity(count)
-    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    var h = FNV1a.offsetBasis
     for i in 0..<count {
         let low = lowerByte(span[unchecked: i])
         out.append(low)
-        h = (h ^ UInt64(low)) &* 0x100000001b3
+        h = FNV1a.step(h, low)
     }
     return ByteKey(bytes: out, hash: h)
 }
