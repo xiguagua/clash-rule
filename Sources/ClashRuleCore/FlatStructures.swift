@@ -3,7 +3,7 @@
 // no enum-with-associated-values unions in index storage.
 
 /// `policyID → (offset, length)` into the policy-name arena.
-struct PolicyRange: BitwiseCopyable, Sendable {
+struct PolicyNameRef: BitwiseCopyable, Sendable {
     var offset: UInt32 = 0
     var length: UInt16 = 0
 }

@@ -56,7 +56,7 @@ struct RuleSink {
     // Policy interning
     private var policyKeys: [ByteKey: UInt16] = [:]
     var policyArena = ByteArena()
-    private(set) var policyRanges: [PolicyRange] = []
+    private(set) var policyNameRefs: [PolicyNameRef] = []
 
     // Collectors
     var exact: [ByteKey: (policy: UInt16, rule: UInt32)] = [:]
@@ -89,12 +89,12 @@ struct RuleSink {
         }
         let key = ByteKey(Array(copying: span))
         if let id = policyKeys[key] { return id }
-        guard policyRanges.count < 65536 else {
+        guard policyNameRefs.count < 65536 else {
             throw RuleParseError(.policyTableFull, line: line, column: 1, "more than 65536 distinct policy names")
         }
-        let id = UInt16(policyRanges.count)
+        let id = UInt16(policyNameRefs.count)
         let offset = policyArena.append(span)
-        policyRanges.append(PolicyRange(offset: offset, length: UInt16(span.count)))
+        policyNameRefs.append(PolicyNameRef(offset: offset, length: UInt16(span.count)))
         policyKeys[key] = id
         return id
     }

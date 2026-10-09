@@ -3,7 +3,7 @@
 /// across threads is safe: all mutation happens before the snapshot freezes.
 public struct CompiledRules: Sendable {
     // Policy table
-    var policyRangesArr: ContiguousArray<PolicyRange>
+    var policyNameRefs: ContiguousArray<PolicyNameRef>
     var policyArena: ContiguousArray<UInt8>
 
     // Exact domain (open addressing, power-of-two capacity)
@@ -93,10 +93,10 @@ public struct CompiledRules: Sendable {
 
     /// Diagnostic convenience — allocates a `String`. Never use in the hot path.
     public func policyName(_ id: UInt16) -> String {
-        precondition(Int(id) < policyRangesArr.count, "policyID out of range")
-        let range = policyRangesArr[Int(id)]
-        let start = Int(range.offset)
-        return String(decoding: policyArena[start..<(start + Int(range.length))], as: UTF8.self)
+        precondition(Int(id) < policyNameRefs.count, "policyID out of range")
+        let ref = policyNameRefs[Int(id)]
+        let start = Int(ref.offset)
+        return String(decoding: policyArena[start..<(start + Int(ref.length))], as: UTF8.self)
     }
 }
 
@@ -105,7 +105,7 @@ public struct CompiledRules: Sendable {
 extension RuleSink {
     /// Freeze everything into the immutable snapshot.
     func finish() -> CompiledRules {
-        let policyRangeArray = ContiguousArray(policyRanges)
+        let policyNameRefArray = ContiguousArray(policyNameRefs)
         let policyArenaBytes = policyArena.bytes
 
         // Open-addressing hash table builder for exact domain, process name, and process path.
@@ -271,7 +271,7 @@ extension RuleSink {
         let logicArenaBytes = logicArena.bytes
 
         return CompiledRules(
-            policyRangesArr: policyRangeArray,
+            policyNameRefs: policyNameRefArray,
             policyArena: policyArenaBytes,
             exactKeys: exactTable.keys,
             exactEntries: exactTable.entries,
