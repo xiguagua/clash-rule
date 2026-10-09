@@ -88,7 +88,7 @@ struct RuleParser {
     }
 
     static func toString(_ span: Span<UInt8>) -> String {
-        span.withUnsafeBufferPointer { String(decoding: $0, as: UTF8.self) }
+        String(decoding: span)
     }
 
     @inline(__always)

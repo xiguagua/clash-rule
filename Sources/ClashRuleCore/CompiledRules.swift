@@ -59,9 +59,96 @@ public struct CompiledRules: Sendable {
     var matchPolicy: UInt16
     var matchRuleIndex: UInt32
     var hasMatchRule: Bool
-    public private(set) var bounds: CategoryBounds
 
-    public var ruleCount: Int
+    private var _bounds: CategoryBounds
+    /// CategoryBounds borrow accessor (SE-0507): lends category bounds in-place from stable storage.
+    public var bounds: CategoryBounds {
+        borrow { _bounds }
+    }
+
+    private var _ruleCount: Int
+    /// Total rule count borrow accessor (SE-0507): lends rule count in-place from stable storage.
+    public var ruleCount: Int {
+        borrow { _ruleCount }
+    }
+
+    init(
+        policyNameRefs: ContiguousArray<PolicyNameRef>,
+        policyArena: ContiguousArray<UInt8>,
+        exactKeys: ContiguousArray<UInt8>,
+        exactEntries: ContiguousArray<ExactEntry>,
+        exactSlotMask: UInt32,
+        trieLabels: ContiguousArray<UInt8>,
+        trieNodes: ContiguousArray<SuffixTrieNode>,
+        trieChildIndices: ContiguousArray<UInt32>,
+        trieRoot: UInt32,
+        ipv4Nodes: ContiguousArray<IPNode>,
+        ipv6Nodes: ContiguousArray<IPNode>,
+        srcIPv4Nodes: ContiguousArray<IPNode>,
+        srcIPv6Nodes: ContiguousArray<IPNode>,
+        portEntries: ContiguousArray<PortEntry>,
+        keywordEntries: ContiguousArray<KeywordEntry>,
+        keywordArena: ContiguousArray<UInt8>,
+        processNameKeys: ContiguousArray<UInt8>,
+        processNameEntries: ContiguousArray<ExactEntry>,
+        processNameSlotMask: UInt32,
+        processPathKeys: ContiguousArray<UInt8>,
+        processPathEntries: ContiguousArray<ExactEntry>,
+        processPathSlotMask: UInt32,
+        tcpPolicy: UInt16,
+        tcpRuleIndex: UInt32,
+        udpPolicy: UInt16,
+        udpRuleIndex: UInt32,
+        dscpTable: ContiguousArray<DscpEntry>,
+        geoIPEntries: ContiguousArray<GeoIPEntry>,
+        logicRules: ContiguousArray<LogicRule>,
+        logicNodes: ContiguousArray<LogicNode>,
+        logicChildIndices: ContiguousArray<UInt32>,
+        logicArena: ContiguousArray<UInt8>,
+        matchPolicy: UInt16,
+        matchRuleIndex: UInt32,
+        hasMatchRule: Bool,
+        bounds: CategoryBounds,
+        ruleCount: Int
+    ) {
+        self.policyNameRefs = policyNameRefs
+        self.policyArena = policyArena
+        self.exactKeys = exactKeys
+        self.exactEntries = exactEntries
+        self.exactSlotMask = exactSlotMask
+        self.trieLabels = trieLabels
+        self.trieNodes = trieNodes
+        self.trieChildIndices = trieChildIndices
+        self.trieRoot = trieRoot
+        self.ipv4Nodes = ipv4Nodes
+        self.ipv6Nodes = ipv6Nodes
+        self.srcIPv4Nodes = srcIPv4Nodes
+        self.srcIPv6Nodes = srcIPv6Nodes
+        self.portEntries = portEntries
+        self.keywordEntries = keywordEntries
+        self.keywordArena = keywordArena
+        self.processNameKeys = processNameKeys
+        self.processNameEntries = processNameEntries
+        self.processNameSlotMask = processNameSlotMask
+        self.processPathKeys = processPathKeys
+        self.processPathEntries = processPathEntries
+        self.processPathSlotMask = processPathSlotMask
+        self.tcpPolicy = tcpPolicy
+        self.tcpRuleIndex = tcpRuleIndex
+        self.udpPolicy = udpPolicy
+        self.udpRuleIndex = udpRuleIndex
+        self.dscpTable = dscpTable
+        self.geoIPEntries = geoIPEntries
+        self.logicRules = logicRules
+        self.logicNodes = logicNodes
+        self.logicChildIndices = logicChildIndices
+        self.logicArena = logicArena
+        self.matchPolicy = matchPolicy
+        self.matchRuleIndex = matchRuleIndex
+        self.hasMatchRule = hasMatchRule
+        self._bounds = bounds
+        self._ruleCount = ruleCount
+    }
 
     /// Number of interned policy names. Useful for validating handles at API boundaries.
     public var policyCount: Int { policyNameRefs.count }
@@ -100,16 +187,12 @@ public struct CompiledRules: Sendable {
         let ref = policyNameRefs[Int(id)]
         let start = Int(ref.offset)
         let end = start + Int(ref.length)
-        return policyArena.withUnsafeBufferPointer { buffer in
-            body(Span(_unsafeElements: UnsafeBufferPointer(rebasing: buffer[start..<end])))
-        }
+        return body(policyArena.span.extracting(start..<end))
     }
 
     /// Diagnostic convenience — allocates a `String`. Never use in the hot path.
     public func policyName(_ id: UInt16) -> String {
-        withPolicyNameBytes(id) { span in
-            span.withUnsafeBufferPointer { String(decoding: $0, as: UTF8.self) }
-        }
+        withPolicyNameBytes(id) { String(decoding: $0) }
     }
 }
 

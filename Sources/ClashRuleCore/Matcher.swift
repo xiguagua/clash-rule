@@ -48,10 +48,16 @@ public struct MatchContext: Sendable {
 /// winner is the candidate with the lowest rule index — equivalent to a
 /// sequential scan, but O(1)-ish per request.
 public struct Matcher: Sendable {
-    public let rules: CompiledRules
+    private var _rules: CompiledRules
+
+    /// Borrow accessor (SE-0507): lends the immutable compiled snapshot in-place from stable storage,
+    /// avoiding copying or ARC reference counting overhead across its flat array regions.
+    public var rules: CompiledRules {
+        borrow { _rules }
+    }
 
     public init(_ rules: CompiledRules) {
-        self.rules = rules
+        self._rules = rules
     }
 
     /// Preferred entry point: borrowed `Span<UInt8>` for domain, process name, and process path.

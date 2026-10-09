@@ -92,3 +92,18 @@ extension Array where Element: BitwiseCopyable {
     }
 }
 
+extension String {
+    /// Ergonomic UTF-8 decoding from a safe borrowed `Span<UInt8>`.
+    @inlinable
+    init(decoding span: Span<UInt8>) {
+        self = span.withUnsafeBufferPointer { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Ergonomic UTF-8 decoding from a safe borrowed `RawSpan`.
+    @inlinable
+    init(decoding raw: RawSpan) {
+        self = raw.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
+    }
+}
+
+

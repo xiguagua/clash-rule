@@ -225,7 +225,7 @@ Clash 语义：**规则文件顺序即优先级，第一条匹配生效**。朴�
 
 ### Swift 6.4 增量演进手段（渐进式探索）
 
-- **SE-0507 `borrow` / `mutate` accessors**：`CompiledRules` 的 region 以 borrowing 计算属性直出 `Span`（如 `suffixTrieSpan`），Matcher 内部传递不再层层闭包。
+- **SE-0507 `borrow` / `mutate` accessors**：**已落地**。`ByteArena.bytes` 采用 borrow/mutate 消除 CoW 检查；`CompiledRules.bounds` / `ruleCount` 与 `Matcher.rules` 采用 borrow 访问器就地借用，消除结构体大快照传递时的 ARC retain/release；提供 `String(decoding: Span)` 简化 UTF-8 解码。
 - **SE-0524 `withTemporaryAllocation`**：Parser scratch（label 拆分缓冲、哈希 build 临时区）交给 OutputSpan 封装，初始化/清理含 throw 路径由类型系统保证。
 - **SE-0527 `RigidArray` / `UniqueArray`（`Containers` 模块）**：编译期缓冲唯一所有权、无 CoW，写入路径免引用计数检查（当前生产实现以 `ContiguousArray` + 批量 `copying: span` 达到 74.7ms / 100k）。
 - **`@diagnose`**：核心模块将 unsafe/并发类 warning 升级为 error，作为 CI 纪律。
@@ -449,7 +449,7 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 | 小固定尺寸表 | `ContiguousArray` | `ContiguousArray`（`InlineArray` 备选） | SE-0462 | 维持扁平数组避开 open bug #83774 |
 | 编译期缓冲 | `ContiguousArray`（CoW） | `ContiguousArray`（`RigidArray` 备选） | SE-0527 · Swift 6.4（`Containers`） | 当前平铺拷贝已达 74.7ms/100k，`RigidArray` 可作为未来免 CoW 进阶手段 |
 | Parser scratch | 手管 `UnsafeMutablePointer` | `CommaRangeScanner` 零分配扫描器 | SE-0524 · Swift 6.4 | 解析期游标范围迭代，无需临时分配；`withTemporaryAllocation` 可作扩展点 |
-| Span 属性出口 | 闭包传递 | `withPolicyNameBytes` / `Span` | SE-0507 · Swift 6.4 | 属性借用与 Span 暴露 |
+| Span 属性出口与属性借用 | 闭包传递 / get 拷贝 | `borrow` / `mutate` 访问器 + `String(decoding:)` | SE-0507 · Swift 6.4 | **已落地**：`ByteArena`/`Matcher`/`CompiledRules` 消除 CoW 与 ARC 拷贝；UTF-8 安全解码 |
 | NIO 生态边界 | — | `ByteBuffer.readableBytesSpan` 借用入核心 | swift-nio 2.99+（Swift 6.2 编译器） | 可选 `ClashRuleNIO` product，边界零拷贝；核心不依赖 NIO |
 | 大数组主体 / arena 主体 | `ContiguousArray` / mmap | **平铺数组 + UInt32 索引** | — | 当前由多个 `ContiguousArray<POD>` 构成；单块一体化 mmap 为进阶规划 |
 | 索引哈希 | 自实现 wyhash/FNV | **自实现 FNV-1a** | — | **已落地**：确定性索引构建，改动同时同步两端 |
