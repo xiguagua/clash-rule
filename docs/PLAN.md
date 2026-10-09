@@ -71,33 +71,77 @@
 
 ### 2.1 Arena + Flat Arena Region
 
-所有数据落进一个连续内存块（`ContiguousArray<UInt8>` 或 mmap 文件），内部指针一律用 **UInt32 偏移**，不用指针。
+当前实现采用基于平铺数组（`ContiguousArray<POD>`）与字节缓冲（`ByteArena`）的扁平结构，内部指针一律用 **UInt32 偏移/索引**，不使用任何类引用与堆对象。
 
-> **Swift 6.2+ 类型选型说明**：arena 的写入阶段用 `OutputSpan`/`OutputRawSpan`（SE-0448）替代手写 bump 指针；POD 结构体显式标注 `BitwiseCopyable`（SE-0426）+ `@frozen`，保证布局并使 `Span<T>.bytes` 原始字节视图可用。仅小固定尺寸的表（region header、IPv6 16 字节等）可用 `InlineArray`（SE-0462）；**主体索引结构不用** `InlineArray`（大 N 值类型整块拷贝 + 存在 open bug swiftlang#83774），继续用扁平数组。
+> **当前实现说明**：
+> 当前 `CompiledRules` 由各规则类别的平铺 POD 数组（`exactEntries`、`trieNodes`、`ipv4Nodes`、`portEntries`、`keywordEntries`、`logicRules` 等）以及连续字节区（`policyArena`、`logicArena` 等）组成，各 POD 结构显式标注 `BitwiseCopyable`（SE-0426）+ `Sendable`。编译期通过 `ByteArena.append(copying: span)` 批量平铺写入。
+> 单块一体化 blob 序列化 / `mmap` 快照为进阶优化（未来可引入单一连续内存块与 `RegionTable` 实现整块无反序列化加载）。
 >
-> **Swift 6.4 增量**（SE-0527，`Containers` 模块）：编译期的 arena 填充缓冲从 `ContiguousArray` 换成 **`RigidArray`（容量可预估、一次分配）或 `UniqueArray`（可增长）**——两者唯一所有权、无 CoW、单块连续堆内存，写入路径省掉引用计数检查；冻结后移交，mmap 路径仍自管。
+> **Swift 6.4 容器演进说明**：
+> `RigidArray` / `UniqueArray`（SE-0527，`Containers` 模块）以及 `OutputSpan`/`OutputRawSpan`（SE-0448）作为未来消除写入 CoW 检查的可选手段；当前生产基线已使用 `ContiguousArray` + `Span` 批量内存拷贝，热路径匹配已实现 0 堆分配断言。
 
 ```swift
-/// 编译态快照——全部 POD，可 memcpy 可 mmap
-/// 结构体需 @frozen + BitwiseCopyable（SE-0426）
-struct CompiledRules {
-    // 头部：各 region 的 (offset, count)，UInt32
-    var regionTable: RegionTable
-    // 后续是各 region 内容：
-    // [0] stringArena   : UInt8 平铺（policy 名、域名、进程名）
-    // [1] exactDomain   : 开放寻址哈希表 → policy handle
-    // [2] suffixTrie    : 扁平 trie（见 2.3）
-    // [3] keywordIndex  : 子串匹配索引（Aho-Corasick 扁平版，仅当 keyword 多时启用）
-    // [4] ipTrie        : IPv4/IPv6 扁平基数 trie（见 2.4）
-    // [5] portRanges    : 排序区间数组（二分）
-    // [6] processIndex  : 哈希表
-    // [7] ruleTable     : 逻辑规则（AND/OR/NOT/SUB-RULE）的表达式栈
+/// 编译态快照——全部平铺 POD 结构，零堆引用对象，线程安全只读共享
+public struct CompiledRules: Sendable {
+    // Policy table
+    var policyNameRefs: ContiguousArray<PolicyNameRef>
+    var policyArena: ContiguousArray<UInt8>
+
+    // Exact domain（开放寻址平铺表）
+    var exactKeys: ContiguousArray<UInt8>
+    var exactEntries: ContiguousArray<ExactEntry>
+    var exactSlotMask: UInt32
+
+    // Reversed-label suffix trie（扁平 trie 节点与子节点索引）
+    var trieLabels: ContiguousArray<UInt8>
+    var trieNodes: ContiguousArray<SuffixTrieNode>
+    var trieChildIndices: ContiguousArray<UInt32>
+    var trieRoot: UInt32
+
+    // IP radix tries（IPv4 / IPv6 / Src-IP 二叉基数 trie）
+    var ipv4Nodes: ContiguousArray<IPNode>
+    var ipv6Nodes: ContiguousArray<IPNode>
+    var srcIPv4Nodes: ContiguousArray<IPNode>
+    var srcIPv6Nodes: ContiguousArray<IPNode>
+
+    // Ports（排序区间数组，二分）
+    var portEntries: ContiguousArray<PortEntry>
+
+    // Keywords（平铺条目，当前为线性扫描）
+    var keywordEntries: ContiguousArray<KeywordEntry>
+    var keywordArena: ContiguousArray<UInt8>
+
+    // Process name & path（开放寻址平铺表）
+    var processNameKeys: ContiguousArray<UInt8>
+    var processNameEntries: ContiguousArray<ExactEntry>
+    var processNameSlotMask: UInt32
+    var processPathKeys: ContiguousArray<UInt8>
+    var processPathEntries: ContiguousArray<ExactEntry>
+    var processPathSlotMask: UInt32
+
+    // Network / DSCP / GeoIP
+    var tcpPolicy: UInt16; var tcpRuleIndex: UInt32
+    var udpPolicy: UInt16; var udpRuleIndex: UInt32
+    var dscpTable: ContiguousArray<DscpEntry>
+    var geoIPEntries: ContiguousArray<GeoIPEntry>
+
+    // 逻辑规则（AND/OR/NOT/SUB-RULE 扁平表达式树）
+    var logicRules: ContiguousArray<LogicRule>
+    var logicNodes: ContiguousArray<LogicNode>
+    var logicChildIndices: ContiguousArray<UInt32>
+    var logicArena: ContiguousArray<UInt8>
+
+    var matchPolicy: UInt16
+    var matchRuleIndex: UInt32
+    var hasMatchRule: Bool
+    public private(set) var bounds: CategoryBounds
+    public var ruleCount: Int
 }
 ```
 
-**为什么用 arena + 偏移而不是 Swift 原生集合：**
+**为什么用平铺结构 + 偏移而不是 Swift 原生复杂对象：**
 - Swift `Array<Struct>` 每条规则也行，但跨结构指针（如 trie 节点 → stringArena）没法表达，除非用 class（引用计数开销 + 散乱堆分配）。
-- 扁平化后整个快照是**单块内存**：构建完可整块移交/序列化/`mmap`，iOS 上还能直接用 mmap 避免驻留。
+- 扁平化后整个快照不含引用类型，构建完成后跨线程自由无锁只读共享，且易于估算精确内存使用量。未来亦可平滑打包为单块连续内存以供 `mmap`。
 
 ### 2.2 单条规则的编译态大小（预算）
 
@@ -124,7 +168,7 @@ struct CompiledRules {
 - 查找：输入域名从右往左逐 label 下走，命中 `flags.isSuffix` 即匹配；同时记录最长匹配（DOMAIN-SUFFIX 贪婪 vs 具体规则先出现的语义由 rule-index 仲裁）。
 - 10 万域名 → 节点数通常 < 15 万 → ~2.4 MB。
 
-DOMAIN-KEYWORD 数量少时（< 64）直接线性比对（cache 极佳）；多时编译成 Aho-Corasick 扁平自动机。
+DOMAIN-KEYWORD 数量少时（< 64）直接平铺线性比对（`KeywordEntry`，cache 极佳，且受 `CategoryBounds` 有界短路剪枝加速）；多时未来可升级为 Aho-Corasick 扁平自动机（代码结构中已预留扩展点）。
 
 ### 2.4 IP CIDR 索引
 
@@ -179,11 +223,11 @@ Clash 语义：**规则文件顺序即优先级，第一条匹配生效**。朴�
 - **SIMD**：域名逐 label 比对用 `SIMD8<UInt8>`/`memchr` 加速；keyword 用 AC 自动机时也保持标量，避免过度优化。
 - **Benchmark 纪律**：swift-benchmark 覆盖 parse / compile / match 三轴，回归 CI 阻断。
 
-### Swift 6.4 增量手段
+### Swift 6.4 增量演进手段（渐进式探索）
 
 - **SE-0507 `borrow` / `mutate` accessors**：`CompiledRules` 的 region 以 borrowing 计算属性直出 `Span`（如 `suffixTrieSpan`），Matcher 内部传递不再层层闭包。
 - **SE-0524 `withTemporaryAllocation`**：Parser scratch（label 拆分缓冲、哈希 build 临时区）交给 OutputSpan 封装，初始化/清理含 throw 路径由类型系统保证。
-- **SE-0527 `RigidArray` / `UniqueArray`（`Containers` 模块）**：编译期缓冲唯一所有权、无 CoW，写入路径免引用计数检查（见 2.1）。
+- **SE-0527 `RigidArray` / `UniqueArray`（`Containers` 模块）**：编译期缓冲唯一所有权、无 CoW，写入路径免引用计数检查（当前生产实现以 `ContiguousArray` + 批量 `copying: span` 达到 74.7ms / 100k）。
 - **`@diagnose`**：核心模块将 unsafe/并发类 warning 升级为 error，作为 CI 纪律。
 - **预期 6.5 落地、暂不依赖**：SE-0516 `Iterable`（Span/InlineArray 的 for-in 遍历）、SE-0515（reduce 产出 noncopyable）——LSG 2026-08 状态更新将其列入 6.5。
 
@@ -195,27 +239,77 @@ Clash 语义：**规则文件顺序即优先级，第一条匹配生效**。朴�
 
 ```c
 // Opaque handle，背后是 immutable snapshot
-typedef struct clash_rule_engine_s* clash_rule_engine_t;
+typedef void *clash_rule_engine_t;
 
+typedef int32_t clash_rule_status;
+enum clash_rule_status_code {
+    CLASH_RULE_STATUS_OK = 0,
+    CLASH_RULE_STATUS_NO_MATCH = 1,
+    CLASH_RULE_STATUS_INVALID_ARGUMENT = 2,
+    CLASH_RULE_STATUS_BUFFER_TOO_SMALL = 3
+};
+
+typedef struct clash_rule_error {
+    int32_t code;
+    size_t line;
+    size_t column;
+} clash_rule_error;
+
+typedef struct clash_rule_request {
+    const uint8_t *domain;
+    size_t domain_length;
+
+    uint8_t has_target_address;
+    uint64_t target_address_high;
+    uint64_t target_address_low;
+    uint16_t target_port;
+
+    uint8_t has_source_address;
+    uint64_t source_address_high;
+    uint64_t source_address_low;
+    uint16_t source_port;
+
+    const uint8_t *process_name;
+    size_t process_name_length;
+    const uint8_t *process_path;
+    size_t process_path_length;
+
+    /* 0 = 未指定，1 = TCP，2 = UDP */
+    uint8_t network_protocol;
+    uint8_t has_dscp;
+    uint8_t dscp;
+
+    /* 大写 ASCII 国家码按大端打包，例如 "US" = 0x00005553 */
+    uint32_t country_code;
+} clash_rule_request;
+
+/* 编译规则文本。rule_data 在调用期间借用；解析失败返回 NULL 并回填 out_error */
 clash_rule_engine_t clash_rule_engine_create(
-    const uint8_t* rule_bytes,    // 原始规则文本（UTF-8）——标识符避开 bytes（见 9 风险表）
-    size_t len,
-    clash_rule_error* out_err);   // 错误码 + 行号
+    const uint8_t *rule_data,     // 标识符避开 bytes（见 9 风险表）
+    size_t rule_length,
+    clash_rule_error *out_error); // 错误码 + 行号/列号
 
-clash_rule_error clash_rule_engine_match(
-    clash_rule_engine_t eng,
-    const clash_rule_request* req, // C struct：domain/IP/port/process
-    uint32_t* out_policy_id);      // 返回 interned policy 名 ID
+/* 销毁引擎句柄。NULL 安全 */
+void clash_rule_engine_destroy(clash_rule_engine_t engine);
 
-size_t clash_rule_engine_policy_name(
-    clash_rule_engine_t eng, uint32_t policy_id,
-    uint8_t* buf, size_t buf_cap);  // 拿 policy 名，避免 String ABI
+/* 执行一次规则匹配。返回状态码，命中时返回 OK 并写入 policy_id 与 rule_index */
+clash_rule_status clash_rule_engine_match(
+    clash_rule_engine_t engine,
+    const clash_rule_request *request,
+    uint16_t *out_policy_id,      // 返回 interned policy 名 ID
+    uint32_t *out_rule_index);    // 返回命中的规则行号索引
 
-void clash_rule_engine_destroy(clash_rule_engine_t eng);
+/* 查询已 intern 的 policy 名称的 UTF-8 字节。支持容量检查与尺寸查询 */
+clash_rule_status clash_rule_engine_policy_name(
+    clash_rule_engine_t engine,
+    uint16_t policy_id,
+    uint8_t *out_name,
+    size_t capacity,
+    size_t *out_length);
 ```
 
-- **错误码 + 行号** 返回，不返回 Swift String。
-- **policy 用 interned ID**：配置期把 policy 名 `interning`，调用方按 ID 比对（O(1)），需要名字时再显式 `policy_name`。
+- **错误码 + 行列号** 返回，不返回 Swift String。
+- **policy 用 interned ID**：配置期把 policy 名 `interning`（`UInt16`），调用方按 ID 比对（O(1)），需要名字时再显式调用 `policy_name`。
 
 ### 5.2 各语言接入难度评估
 
@@ -238,19 +332,35 @@ void clash_rule_engine_destroy(clash_rule_engine_t eng);
 clash-rule/
 ├── Package.swift
 ├── Sources/
-│   ├── ClashRuleCore/        # 纯 Swift，零第三方依赖
-│   │   ├── Parser/
-│   │   ├── Compiler/
-│   │   ├── Structures/       # FlatTrie, FlatRadix, FlatHashMap, Arena
-│   │   └── Matcher/
-│   ├── ClashRuleCAPI/        # @c 导出层（唯一 ABI 面）
-│   ├── ClashRuleNIO/         # 可选：NIO ByteBuffer 边界集成（依赖 NIOCore）
-│   └── ClashRuleCLI/         # 调试/基准 CLI
+│   ├── ClashRuleCore/            # 纯 Swift，零第三方依赖
+│   │   ├── ByteArena.swift
+│   │   ├── Bytes.swift
+│   │   ├── CompiledRules.swift
+│   │   ├── Compiler.swift
+│   │   ├── FlatStructures.swift
+│   │   ├── Matcher.swift
+│   │   ├── Parser.swift
+│   │   ├── RuleKind.swift
+│   │   ├── RuleParseError.swift
+│   │   └── SwiftErgonomics.swift # 便捷上层 API（String/Data 扩展）
+│   ├── ClashRuleCAPIHeader/      # C 头文件 target
+│   │   └── include/
+│   │       └── clash_rule.h      # 稳定 C 接口头文件
+│   ├── ClashRuleCAPI/            # @c 导出层（唯一 C ABI 面）
+│   │   └── ClashRuleCAPI.swift
+│   ├── ClashRuleBenchmark/       # 规则生成与基准测试可执行程序
+│   │   └── main.swift
+│   └── ClashRuleNIO/             # 可选规划：NIO ByteBuffer 边界集成
 ├── Tests/
-│   ├── UnitTests/
-│   ├── GoldenTests/          # 对拍 mihomo 输出
-│   └── BenchmarkTests/
+│   ├── ClashRuleCoreTests/       # 核心单元测试（75 项测试）
+│   ├── ClashRuleCAPITestSupport/ # C 消费者测试支持（纯 C 烟雾测试）
+│   ├── ClashRuleCAPITests/       # C ABI 测试 target
+│   └── GoldenTests/              # 对拍 mihomo 输出与社区真实规则集测试
+├── Tools/
+│   ├── benchmark/                # 10k/100k 语料生成器与 Go/Swift 对标套件
+│   └── golden-oracle/            # 基于 mihomo 的 golden oracle 生成工具
 └── docs/
+    └── PLAN.md
 ```
 
 ### 5.5 NIO ByteBuffer 集成（可选 product，零拷贝边界）
@@ -296,11 +406,18 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 
 ## 8. 里程碑
 
-- **M1（骨架可跑）**：Swift 6.4 toolchain 基线；Parser + 基础类型（DOMAIN/SUFFIX/IP-CIDR/PORT/MATCH）+ Swift 匹配 API + 单测。~3–5 天。
-- **M2（内存架构落地）**：Arena + flat trie + radix + hash 全部换成扁平结构，序列化快照，RAM 达标。~3–5 天。
-- **M3（语义完备）**：逻辑规则 / SUB-RULE / RULE-SET / GEOIP / PROCESS / SRC 类，Golden test 对拍 mihomo。~5–7 天。
-- **M4（互操作层）**：C ABI + 头文件 + Go cgo 示例 + CLI。~2–3 天。
-- **M5（性能打磨）**：benchmark、CLO/内联调优、SIMD、分配审计。~3 天。
+- **M1（骨架可跑）** [已完成]：Swift 6.4 toolchain 基线；Parser + 基础类型（DOMAIN/SUFFIX/IP-CIDR/PORT/MATCH）+ Swift 匹配 API + 单测。
+- **M2（内存架构落地）** [已完成]：Arena + flat trie + radix + hash 全部换成平铺结构，RAM 达标，热路径零堆分配（断言保障）。
+- **M3（语义完备）** [已完成]：全部规则类型完备；逻辑规则（AND/OR/NOT/SUB-RULE）；RULE-SET 借用解析；以 mihomo 为 oracle 建立 Golden 对拍套件与社区真实规则集测试。
+- **M4（互操作层）** [核心完成]：
+  - [x] Swift 6.3+ 正式 `@c` 导出 C ABI + 稳定头文件 `clash_rule.h`；
+  - [x] C 客户端 smoke test 验证句柄生命周期、匹配、错误码与 Policy 名提取；
+  - [ ] CLI 独立发行工具、Go cgo 示例工程及跨平台链接验证（收尾中）。
+- **M5（性能打磨）** [核心完成]：
+  - [x] 10k/100k corpus 与 Go mihomo 对拍 benchmark；
+  - [x] 成本分层求值与有界短路剪枝（`CategoryBounds`）；
+  - [x] 编译期优化（100k 编译 74.7ms，快照 5.08MB）；
+  - [ ] Aho-Corasick 自动机扩展（按需）、CI 性能门禁与自动化回归（收尾中）。
 
 ---
 
@@ -314,27 +431,27 @@ swift-nio 2.99+（需 Swift 6.2 编译器）已接入 Span 家族，`ByteBuffer`
 | Clash 规则语义边角（no-resolve、MATCH 兜底顺序） | Golden test 用 mihomo 作为 oracle，不一致以 mihomo 为准 |
 | GEOIP 数据库依赖 | 引擎只做「国家码 → policy」索引，不加载 MMDB；由宿主提供 IP→country 回调（C 函数指针）注入 |
 | `InlineArray` 尚有 open bug（栈拷贝内容变化，swiftlang#83774） | 仅用于小固定 N（header、16 字节 IPv6）；不上核心索引结构；CI 加回归断言 |
-| Swift 6.2 `Data.bytes: RawSpan`（SE-0456）与生成头文件标识符冲突（uniffi-rs#2803 同款问题） | 生成 C 头文件时避免把字段/函数参数命名为 `bytes` |
+| Swift 6.2 `Data.bytes: RawSpan`（SE-0456）与生成头文件标识符冲突（uniffi-rs#2803 同款问题） | 生成 C 头文件时避免把字段/函数参数命名为 `bytes`（实装命名为 `rule_data`） |
 
 ---
 
 ## 10. Swift Evolution 类型选型对照（2026-10）
 
-| 用途 | 原选型 | 现选型 | Proposal / 版本 | 说明 |
+| 用途 | 原选型 | 现选型 / 状态 | Proposal / 版本 | 说明 |
 |---|---|---|---|---|
-| 解析输入 | `UnsafeBufferPointer<UInt8>` | `RawSpan` / `Span<UInt8>` | SE-0447, SE-0456 · Swift 6.4+ | 借用安全、non-escaping；无 unsafe fallback；`Data.bytes` 直接返 `RawSpan` |
-| Arena 写入 | 手写 bump 指针 | `OutputSpan` / `OutputRawSpan` | SE-0448 · Swift 6.2 | 初始化状态由类型系统保证 |
-| 热路径字节入参 | `ArraySlice<UInt8>` | `Span<UInt8>` | SE-0447 · Swift 6.2 | 容器无关；non-escapable 恰好匹配"不存储输入" |
-| POD 结构 | 仅 `@frozen` | `+ BitwiseCopyable` | SE-0426 | 原始字节视图（`Span.bytes`）的前提；复制为 memcpy |
-| C ABI 导出 | `@_cdecl` | `@c` + SE-0541 包互操作 | Swift 6.3（2026-03） | 正式特性，风险解除 |
-| 错误处理 | `throws` | typed throws | SE-0413 | `throws(RuleParseError)`，无装箱 |
+| 解析输入 | `UnsafeBufferPointer<UInt8>` | `RawSpan` / `Span<UInt8>` | SE-0447, SE-0456 · Swift 6.4+ | **已落地**：借用安全、non-escaping；无 unsafe fallback；`Data.bytes` 直出 `RawSpan` |
+| Arena 写入 | 手写 bump 指针 | `ByteArena.append(copying:)`（`OutputSpan` 备选） | SE-0448 · Swift 6.2 | **已落地**：通过 Span 批量内存拷贝保证初始化效率，类型系统安全 |
+| 热路径字节入参 | `ArraySlice<UInt8>` | `Span<UInt8>` | SE-0447 · Swift 6.2 | **已落地**：容器无关；non-escapable 恰好匹配“不存储输入” |
+| POD 结构 | 仅 `@frozen` | `+ BitwiseCopyable` | SE-0426 | **已落地**：原始字节视图的前提；复制为 memcpy |
+| C ABI 导出 | `@_cdecl` | `@c` + SE-0541 包互操作 | Swift 6.3（2026-03） | **已落地**：正式特性，头文件与模块解耦稳定导出 |
+| 错误处理 | `throws` | typed throws | SE-0413 | **已落地**：`throws(RuleParseError)`，无装箱 |
 | 热加载换快照 | 锁 / 库外原子 | `Mutex` / `Atomic`（`Synchronization`） | SE-0433, SE-0438 · 6.1/6.2 | 仅换入换出用；match 路径仍无锁 |
-| 小固定尺寸表 | `ContiguousArray` | `InlineArray<T, N>`（小 N） | SE-0462 | 大 N 不用（值类型整块拷贝 + open bug #83774） |
-| 编译期缓冲 | `ContiguousArray`（CoW） | `RigidArray` / `UniqueArray` | SE-0527 · Swift 6.4（`Containers`） | 唯一所有权无 CoW，写入免引用计数检查 |
-| Parser scratch | 手管 `UnsafeMutablePointer` | `withTemporaryAllocation` | SE-0524 · Swift 6.4 | OutputSpan 封装，含 throw 路径的初始化安全 |
-| Span 属性出口 | 闭包传递 | `borrow` / `mutate` accessors | SE-0507 · Swift 6.4 | region 属性直出 Span，借用检查合法化 |
+| 小固定尺寸表 | `ContiguousArray` | `ContiguousArray`（`InlineArray` 备选） | SE-0462 | 维持扁平数组避开 open bug #83774 |
+| 编译期缓冲 | `ContiguousArray`（CoW） | `ContiguousArray`（`RigidArray` 备选） | SE-0527 · Swift 6.4（`Containers`） | 当前平铺拷贝已达 74.7ms/100k，`RigidArray` 可作为未来免 CoW 进阶手段 |
+| Parser scratch | 手管 `UnsafeMutablePointer` | `CommaRangeScanner` 零分配扫描器 | SE-0524 · Swift 6.4 | 解析期游标范围迭代，无需临时分配；`withTemporaryAllocation` 可作扩展点 |
+| Span 属性出口 | 闭包传递 | `withPolicyNameBytes` / `Span` | SE-0507 · Swift 6.4 | 属性借用与 Span 暴露 |
 | NIO 生态边界 | — | `ByteBuffer.readableBytesSpan` 借用入核心 | swift-nio 2.99+（Swift 6.2 编译器） | 可选 `ClashRuleNIO` product，边界零拷贝；核心不依赖 NIO |
-| 大数组主体 / arena 主体 | `ContiguousArray` / mmap | **维持不变** | — | Evolution 无对应替代品；Span 是视图抽象，不解决存储布局 |
-| 索引哈希 | 自实现 wyhash/FNV | **维持不变** | — | `Hashable` 随机种子，不能用于确定性索引结构 |
+| 大数组主体 / arena 主体 | `ContiguousArray` / mmap | **平铺数组 + UInt32 索引** | — | 当前由多个 `ContiguousArray<POD>` 构成；单块一体化 mmap 为进阶规划 |
+| 索引哈希 | 自实现 wyhash/FNV | **自实现 FNV-1a** | — | **已落地**：确定性索引构建，改动同时同步两端 |
 
 补充：SE-0494（`isTriviallyIdentical`，6.4）与我们的单 arena 快照设计无交集，跳过；Embedded Swift（6.4 有多项改进）作为 M5 可选实验——Core 满足子集约束（无反射、静态类型已知），可产出极小二进制，但会限制 C API 动态性，不进主线。6.4 对 Wasm/C++/Java 互操作的改进记为未来方向（Wasm 目标对浏览器场景是潜在加分项）。
