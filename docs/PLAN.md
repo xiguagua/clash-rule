@@ -55,7 +55,7 @@
 
 ### 后续规划
 
-- M4 收尾：CLI 工具、Go cgo 示例、跨平台 C ABI 链接验证。
+- M4 收尾：CLI 发行打包、Go cgo 示例、跨平台 C ABI 链接验证。
 - M5 收尾：CI 性能门禁与自动化回归；Aho-Corasick（按需）。
 
 ---
@@ -248,7 +248,8 @@ NIO 的 `writeBytes(RawSpan)` 与 `ByteBuffer(capacity:initializingWith:)`（`Ou
 - **M4 互操作层**【核心完成】：
   - [x] `@c` 导出 C ABI + 稳定头文件；
   - [x] C 烟雾测试：句柄生命周期、匹配、错误码、Policy 名提取；
-  - [ ] CLI 独立发行工具、Go cgo 示例、跨平台链接验证。
+  - [x] CLI：`check`（编译检查）与 `explain`（逐类别解释命中原因），见 `Sources/ClashRuleTool`；
+  - [ ] CLI 独立发行（打包、签名）、Go cgo 示例、跨平台链接验证。
 - **M5 性能打磨**【核心完成】：
   - [x] 10k/100k corpus 与 mihomo 对拍 benchmark；
   - [x] 成本分层求值 + 有界短路剪枝；

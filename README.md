@@ -46,6 +46,25 @@ swift test
 
 脚本依赖 Go（用于构建 mihomo oracle 与基准驱动）以及 Python 3（用于结果核算）。详见 [`scripts/README.md`](scripts/README.md)。
 
+## 命令行工具
+
+`clash-rule` 用于排查规则问题：编译检查，以及解释一次请求为什么命中或未命中某条规则。
+
+```bash
+clash-rule check rules.txt [--rule-set 名称=路径]...
+clash-rule explain rules.txt --domain www.example.com --ip 10.1.2.3 --port 443 --network tcp
+```
+
+`explain` 会逐个类别列出求值结果，标出胜出者，并说明被覆盖的命中是被哪条规则覆盖的。RULE-SET 需要通过 `--rule-set` 指定文件。
+
+源行号依赖 `Diagnostics` trait，默认关闭。需要显示行号时这样构建和运行：
+
+```bash
+swift run --traits Diagnostics clash-rule explain rules.txt --domain example.com
+```
+
+退出码：0 成功（含未命中）；1 规则或文件错误；2 参数错误。
+
 ## 目录结构
 
 | 路径 | 说明 |
@@ -54,6 +73,8 @@ swift test
 | `Sources/ClashRuleCAPI` | `@c` 导出层，唯一 C ABI 面 |
 | `Sources/ClashRuleCAPIHeader` | 稳定 C 头文件 |
 | `Sources/ClashRuleBenchmark` | 规则生成与基准可执行程序 |
+| `Sources/ClashRuleTool` | `clash-rule` 命令行的逻辑（参数解析、check / explain 输出） |
+| `Sources/ClashRuleCLI` | `clash-rule` 可执行入口 |
 | `Tests/` | Core、C API、Golden 测试 |
 | `Tools/benchmark` | Go 端语料生成与 mihomo 基准驱动 |
 | `Tools/golden-oracle` | Go 端 oracle 生成工具 |

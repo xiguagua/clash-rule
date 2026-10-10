@@ -15,6 +15,7 @@ let package = Package(
             targets: ["ClashRuleCAPI", "ClashRuleCAPIHeader"]
         ),
         .executable(name: "ClashRuleBenchmark", targets: ["ClashRuleBenchmark"]),
+        .executable(name: "clash-rule", targets: ["ClashRuleCLI"]),
     ],
     traits: [
         .default(enabledTraits: []),
@@ -42,6 +43,20 @@ let package = Package(
         .executableTarget(
             name: "ClashRuleBenchmark",
             dependencies: ["ClashRuleCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ClashRuleTool",
+            dependencies: ["ClashRuleCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .executableTarget(
+            name: "ClashRuleCLI",
+            dependencies: ["ClashRuleTool"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
@@ -81,6 +96,13 @@ let package = Package(
             resources: [
                 .copy("Fixtures"),
             ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "ClashRuleToolTests",
+            dependencies: ["ClashRuleTool", "ClashRuleCore"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
