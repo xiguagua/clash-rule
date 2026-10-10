@@ -99,7 +99,17 @@ struct RuleSink {
         return id
     }
 
-    mutating func commitLine() { nextRuleIndex &+= 1 }
+    #if Diagnostics
+    /// 第 `i` 个元素是规则序号 `i` 对应的源文件行号（1-based）。
+    private(set) var ruleSourceLines: [UInt32] = []
+    #endif
+
+    mutating func commitLine(line: Int) {
+        #if Diagnostics
+        ruleSourceLines.append(UInt32(line))
+        #endif
+        nextRuleIndex &+= 1
+    }
 
     var bounds = CategoryBounds()
 

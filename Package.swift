@@ -16,6 +16,10 @@ let package = Package(
         ),
         .executable(name: "ClashRuleBenchmark", targets: ["ClashRuleBenchmark"]),
     ],
+    traits: [
+        .default(enabledTraits: []),
+        .trait(name: "Diagnostics", description: "诊断能力（规则序号到源行号的映射），默认关闭"),
+    ],
     targets: [
         .target(
             name: "ClashRuleCore",

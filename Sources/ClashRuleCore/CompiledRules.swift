@@ -72,6 +72,11 @@ public struct CompiledRules: Sendable {
         borrow { _ruleCount }
     }
 
+    #if Diagnostics
+    /// 规则序号 → 源文件行号（1-based），下标即规则序号。注释和空行不计入规则序号。
+    var ruleSourceLines: ContiguousArray<UInt32> = []
+    #endif
+
     init(
         policyNameRefs: ContiguousArray<PolicyNameRef>,
         policyArena: ContiguousArray<UInt8>,
@@ -178,6 +183,9 @@ public struct CompiledRules: Sendable {
         total += logicNodes.count * MemoryLayout<LogicNode>.stride
         total += logicChildIndices.count * MemoryLayout<UInt32>.stride
         total += logicArena.count
+        #if Diagnostics
+        total += ruleSourceLines.count * MemoryLayout<UInt32>.stride
+        #endif
         return total
     }
 
@@ -195,6 +203,20 @@ public struct CompiledRules: Sendable {
         withPolicyNameBytes(id) { String(decoding: $0) }
     }
 }
+
+#if Diagnostics
+extension CompiledRules {
+    /// 返回规则序号对应的源文件行号（1-based）；序号越界时返回 `nil`。
+    ///
+    /// 注意：规则序号不等于行号，注释和空行不计入规则序号。
+    /// RULE-SET 展开出的内部规则共享外层 `RULE-SET` 行的序号。
+    public func sourceLine(ofRule ruleIndex: UInt32) -> Int? {
+        let index = Int(ruleIndex)
+        guard index < ruleSourceLines.count else { return nil }
+        return Int(ruleSourceLines[index])
+    }
+}
+#endif
 
 // MARK: - Flattening
 
@@ -368,7 +390,7 @@ extension RuleSink {
         let logicChildArray = ContiguousArray(logicChildIndices)
         let logicArenaBytes = logicArena.bytes
 
-        return CompiledRules(
+        var rules = CompiledRules(
             policyNameRefs: policyNameRefArray,
             policyArena: policyArenaBytes,
             exactKeys: exactTable.keys,
@@ -407,6 +429,10 @@ extension RuleSink {
             bounds: bounds,
             ruleCount: Int(nextRuleIndex)
         )
+        #if Diagnostics
+        rules.ruleSourceLines = ContiguousArray(ruleSourceLines)
+        #endif
+        return rules
     }
 
     private static func nextPow2(_ n: Int) -> Int {

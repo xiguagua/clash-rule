@@ -213,7 +213,7 @@ struct RuleParser {
             }
             let policyID = try sink.intern(raw.extracting(policyRange), line: line, column: policyRange.lowerBound - base + 1)
             sink.addMatch(policyID: policyID, ruleIndex: sink.nextRuleIndex)
-            sink.commitLine()
+            sink.commitLine(line: line)
             return
         }
 
@@ -313,7 +313,7 @@ struct RuleParser {
         case .match:
             break // handled above
         }
-        sink.commitLine()
+        sink.commitLine(line: line)
     }
 
     // MARK: - Rule-set payload parsing
