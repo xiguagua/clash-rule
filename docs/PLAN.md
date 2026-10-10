@@ -183,7 +183,7 @@ Clash 语义是"规则文件顺序即优先级，第一条匹配生效"，朴素
 ### 5.3 Swift/C 实现要点
 
 - 用正式 `@c` 属性（取代非正式 `@_cdecl`）导出符号，头文件随包分发（SE-0541 包级 Swift/C 互操作）。
-- **生命周期**：C 侧手动 create/destroy；内部 `EngineBox` 携带魔数校验，销毁时毒化，防止野指针、UAF、double-free。Swift 侧 handle 为 `~Copyable` 类型（SE-0544 `intoRawHandle` 消费所有权，`deinit` 自动回收），实现 RAII 级内存安全。
+- **生命周期**：C 侧手动 create/destroy，句柄必须恰好 destroy 一次。销毁后使用、重复销毁、传入非句柄指针、销毁与同一句柄的调用并发，均为调用方责任，库不做检测（未定义行为，已在 `clash_rule.h` 中说明）。Swift 侧 handle 为 `~Copyable` 类型（SE-0544 `intoRawHandle` 消费所有权，`deinit` 自动回收），由类型系统保证单次释放。
 
 ### 5.4 SwiftPM 模块职责
 

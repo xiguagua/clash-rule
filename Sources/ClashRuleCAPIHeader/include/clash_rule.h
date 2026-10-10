@@ -8,7 +8,13 @@
 extern "C" {
 #endif
 
-/* 与 Swift 导出函数使用相同的 void* ABI 表示。 */
+/*
+ * 引擎句柄，只能由 clash_rule_engine_create 创建，且必须 destroy 恰好一次。
+ * 以下情况均为调用方责任，库不做检测，行为未定义：
+ *   - 销毁后继续使用该句柄（包括再次 destroy）；
+ *   - 传入非 clash_rule_engine_create 返回的指针；
+ *   - 销毁与同一句柄的其他调用并发执行。
+ */
 typedef void *clash_rule_engine_t;
 
 typedef int32_t clash_rule_status;
@@ -78,7 +84,7 @@ clash_rule_engine_t clash_rule_engine_create(
     size_t rule_length,
     clash_rule_error *out_error);
 
-/* NULL 安全。多个 match/policy_name 可并发调用；销毁不能与同一 handle 的调用并发执行。 */
+/* NULL 安全。多个 match/policy_name 可并发调用；销毁后句柄失效，见上方说明。 */
 void clash_rule_engine_destroy(clash_rule_engine_t engine);
 
 /*
