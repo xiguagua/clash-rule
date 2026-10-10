@@ -60,7 +60,7 @@ public struct CompiledRules: Sendable {
     var matchRuleIndex: UInt32
     var hasMatchRule: Bool
 
-    private var _bounds: CategoryBounds
+    var _bounds: CategoryBounds
     /// CategoryBounds borrow accessor (SE-0507): lends category bounds in-place from stable storage.
     public var bounds: CategoryBounds {
         borrow { _bounds }
@@ -432,6 +432,10 @@ extension RuleSink {
         #if Diagnostics
         rules.ruleSourceLines = ContiguousArray(ruleSourceLines)
         #endif
+        assert(
+            rules.invariantViolations().isEmpty,
+            "快照不变量被破坏：\(rules.invariantViolations().joined(separator: "；"))"
+        )
         return rules
     }
 
