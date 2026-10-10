@@ -2,7 +2,7 @@
 
 一个用 Swift 实现的 Clash 规则引擎。规则在编译期被转换为扁平、不可变的索引结构，匹配热路径零堆分配、无锁，并通过稳定的 C ABI 供其他语言调用。
 
-语义以 [mihomo](https://github.com/MetaCubeX/mihomo) 为 oracle，通过 Golden 测试做对拍。
+语义以 [mihomo](https://github.com/MetaCubeX/mihomo) 为 oracle，通过 Golden 测试做对照。
 
 ## 特性
 
