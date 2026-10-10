@@ -500,6 +500,40 @@ public enum RuleCompiler {
         return try compile(input, byteRuleSets: byteMap)
     }
 
+    /// 编译规则文本并附带诊断报告（覆盖的规则、MATCH 之后的规则、空规则集、配置指纹）。
+    ///
+    /// 编译结果与 `compile` 完全一致。
+    public static func compileWithReport(
+        _ text: String,
+        ruleSets: [String: String] = [:]
+    ) throws -> CompileResult {
+        var byteMap: [[UInt8]: [UInt8]] = [:]
+        byteMap.reserveCapacity(ruleSets.count)
+        for (name, contents) in ruleSets {
+            byteMap[[UInt8](name.utf8)] = [UInt8](contents.utf8)
+        }
+
+        var fingerprint = FNV1a.offsetBasis
+        for byte in text.utf8 {
+            fingerprint = FNV1a.step(fingerprint, byte)
+        }
+        for (name, contents) in ruleSets.sorted(by: { $0.key < $1.key }) {
+            fingerprint = FNV1a.step(fingerprint, 0)
+            for byte in name.utf8 {
+                fingerprint = FNV1a.step(fingerprint, byte)
+            }
+            fingerprint = FNV1a.step(fingerprint, 0)
+            for byte in contents.utf8 {
+                fingerprint = FNV1a.step(fingerprint, byte)
+            }
+        }
+
+        var sink = RuleSink()
+        try RuleParser.parse(Span(viewing: text.utf8.span.bytes), byteRuleSets: byteMap, into: &sink)
+        let report = sink.makeReport(fingerprint: fingerprint)
+        return CompileResult(rules: sink.finish(), report: report)
+    }
+
     private static func compile(
         _ input: RawSpan,
         byteRuleSets: [[UInt8]: [UInt8]]

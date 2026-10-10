@@ -99,16 +99,75 @@ struct RuleSink {
         return id
     }
 
-    #if Diagnostics
-    /// 第 `i` 个元素是规则序号 `i` 对应的源文件行号（1-based）。
+    /// 第 `i` 个元素是规则序号 `i` 对应的源文件行号（1-based）。编译期始终记录，快照是否保留由 `Diagnostics` 决定。
     private(set) var ruleSourceLines: [UInt32] = []
-    #endif
+
+    /// 当前顶层规则行的行号，供编译报告使用。
+    private(set) var currentLine = 0
+    /// 规则集展开的嵌套深度；大于 0 时，展开出的条目不参与覆盖检测（它们共享外层序号）。
+    private(set) var ruleSetDepth = 0
+    /// 规则集中有效条目的累计数，用于判断规则集是否为空。
+    private(set) var ruleSetEntryCount = 0
+
+    private var keywordFirstRule: [[UInt8]: UInt32] = [:]
+    private(set) var shadowedRules: [ShadowedRule] = []
+    private(set) var emptyRuleSets: [EmptyRuleSet] = []
+
+    mutating func beginLine(line: Int) {
+        currentLine = line
+    }
+
+    mutating func enterRuleSet() {
+        ruleSetDepth += 1
+    }
+
+    mutating func exitRuleSet() {
+        ruleSetDepth -= 1
+    }
+
+    mutating func countRuleSetEntry() {
+        ruleSetEntryCount += 1
+    }
+
+    mutating func noteEmptyRuleSet(name: [UInt8]) {
+        guard ruleSetDepth > 0 else { return }
+        emptyRuleSets.append(EmptyRuleSet(
+            name: String(decoding: name, as: UTF8.self),
+            line: currentLine
+        ))
+    }
+
+    /// 记录一条顶层规则被更早的规则完全覆盖。只对顶层行记录，且只在首条 MATCH 之前记录
+    /// （之后的规则由 `unreachableRules` 统一报告）。
+    mutating func noteShadowed(ruleIndex: UInt32, by earlier: UInt32) {
+        guard ruleSetDepth == 0, matchRule == nil, Int(earlier) < ruleSourceLines.count else { return }
+        shadowedRules.append(ShadowedRule(
+            rule: RuleLocation(ruleIndex: ruleIndex, line: currentLine),
+            shadowedBy: RuleLocation(ruleIndex: earlier, line: Int(ruleSourceLines[Int(earlier)]))
+        ))
+    }
 
     mutating func commitLine(line: Int) {
-        #if Diagnostics
         ruleSourceLines.append(UInt32(line))
-        #endif
         nextRuleIndex &+= 1
+    }
+
+    func makeReport(fingerprint: UInt64) -> CompileReport {
+        var firstMatch: RuleLocation? = nil
+        var unreachable: [RuleLocation] = []
+        if let matchIndex = matchRule?.rule {
+            firstMatch = RuleLocation(ruleIndex: matchIndex, line: Int(ruleSourceLines[Int(matchIndex)]))
+            for index in (Int(matchIndex) + 1)..<ruleSourceLines.count {
+                unreachable.append(RuleLocation(ruleIndex: UInt32(index), line: Int(ruleSourceLines[index])))
+            }
+        }
+        return CompileReport(
+            fingerprint: fingerprint,
+            firstMatch: firstMatch,
+            shadowedRules: shadowedRules,
+            unreachableRules: unreachable,
+            emptyRuleSets: emptyRuleSets
+        )
     }
 
     var bounds = CategoryBounds()
@@ -118,7 +177,10 @@ struct RuleSink {
     ) {
         bounds.minExactRule = min(bounds.minExactRule, ruleIndex)
         let key = lowerKey(span)
-        if let old = exact[key], old.rule <= ruleIndex { return }
+        if let old = exact[key], old.rule <= ruleIndex {
+            noteShadowed(ruleIndex: ruleIndex, by: old.rule)
+            return
+        }
         exact[key] = (policyID, ruleIndex)
     }
 
@@ -126,7 +188,9 @@ struct RuleSink {
         _ span: Span<UInt8>, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minSuffixRule = min(bounds.minSuffixRule, ruleIndex)
-        trie.addSuffix(domain: span, policy: policyID, rule: ruleIndex)
+        if let earlier = trie.addSuffix(domain: span, policy: policyID, rule: ruleIndex) {
+            noteShadowed(ruleIndex: ruleIndex, by: earlier)
+        }
     }
 
     mutating func addKeyword(
@@ -134,28 +198,37 @@ struct RuleSink {
     ) {
         bounds.minKeywordRule = min(bounds.minKeywordRule, ruleIndex)
         let key = lowerBytes(span)
+        if let first = keywordFirstRule[key] {
+            noteShadowed(ruleIndex: ruleIndex, by: first)
+        } else {
+            keywordFirstRule[key] = ruleIndex
+        }
         keywords.append((key, policyID, ruleIndex))
     }
 
     mutating func addIP(
         address: UInt128, prefix: UInt8, isIPv6: Bool, isSource: Bool = false, policyID: UInt16, ruleIndex: UInt32
     ) {
+        let earlier: UInt32?
         if isSource {
             if isIPv6 {
                 bounds.minSrcIPv6Rule = min(bounds.minSrcIPv6Rule, ruleIndex)
-                srcIPv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+                earlier = srcIPv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             } else {
                 bounds.minSrcIPv4Rule = min(bounds.minSrcIPv4Rule, ruleIndex)
-                srcIPv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+                earlier = srcIPv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             }
         } else {
             if isIPv6 {
                 bounds.minIPv6Rule = min(bounds.minIPv6Rule, ruleIndex)
-                ipv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+                earlier = ipv6.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             } else {
                 bounds.minIPv4Rule = min(bounds.minIPv4Rule, ruleIndex)
-                ipv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
+                earlier = ipv4.insert(address: address, prefix: prefix, policy: policyID, rule: ruleIndex)
             }
+        }
+        if let earlier {
+            noteShadowed(ruleIndex: ruleIndex, by: earlier)
         }
     }
 
@@ -163,6 +236,23 @@ struct RuleSink {
         _ intervals: [(low: UInt16, high: UInt16)], side: PortSide, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minPortRule = min(bounds.minPortRule, ruleIndex)
+        var everyIntervalCovered = !intervals.isEmpty
+        var earliest = UInt32.max
+        for interval in intervals {
+            let slot = portMap[(UInt32(interval.low) << 16) | UInt32(interval.high)]
+                ?? PortSlot(low: interval.low, high: interval.high)
+            var covered = true
+            if side != .source {
+                if slot.dstRule < ruleIndex { earliest = min(earliest, slot.dstRule) } else { covered = false }
+            }
+            if side != .destination {
+                if slot.srcRule < ruleIndex { earliest = min(earliest, slot.srcRule) } else { covered = false }
+            }
+            everyIntervalCovered = everyIntervalCovered && covered
+        }
+        if everyIntervalCovered {
+            noteShadowed(ruleIndex: ruleIndex, by: earliest)
+        }
         for interval in intervals {
             let key = (UInt32(interval.low) << 16) | UInt32(interval.high)
             var slot = portMap[key] ?? PortSlot(low: interval.low, high: interval.high)
@@ -181,7 +271,10 @@ struct RuleSink {
     ) {
         bounds.minProcessNameRule = min(bounds.minProcessNameRule, ruleIndex)
         let key = lowerKey(span)
-        if let old = processName[key], old.rule <= ruleIndex { return }
+        if let old = processName[key], old.rule <= ruleIndex {
+            noteShadowed(ruleIndex: ruleIndex, by: old.rule)
+            return
+        }
         processName[key] = (policyID, ruleIndex)
     }
 
@@ -190,7 +283,10 @@ struct RuleSink {
     ) {
         bounds.minProcessPathRule = min(bounds.minProcessPathRule, ruleIndex)
         let key = lowerKey(span)
-        if let old = processPath[key], old.rule <= ruleIndex { return }
+        if let old = processPath[key], old.rule <= ruleIndex {
+            noteShadowed(ruleIndex: ruleIndex, by: old.rule)
+            return
+        }
         processPath[key] = (policyID, ruleIndex)
     }
 
@@ -200,10 +296,16 @@ struct RuleSink {
         bounds.minNetworkRule = min(bounds.minNetworkRule, ruleIndex)
         switch proto {
         case .tcp:
-            if let current = tcpRule, current.rule <= ruleIndex { return }
+            if let current = tcpRule, current.rule <= ruleIndex {
+                noteShadowed(ruleIndex: ruleIndex, by: current.rule)
+                return
+            }
             tcpRule = (policyID, ruleIndex)
         case .udp:
-            if let current = udpRule, current.rule <= ruleIndex { return }
+            if let current = udpRule, current.rule <= ruleIndex {
+                noteShadowed(ruleIndex: ruleIndex, by: current.rule)
+                return
+            }
             udpRule = (policyID, ruleIndex)
         }
     }
@@ -212,7 +314,10 @@ struct RuleSink {
         _ value: UInt8, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minDscpRule = min(bounds.minDscpRule, ruleIndex)
-        if let old = dscpMap[value], old.rule <= ruleIndex { return }
+        if let old = dscpMap[value], old.rule <= ruleIndex {
+            noteShadowed(ruleIndex: ruleIndex, by: old.rule)
+            return
+        }
         dscpMap[value] = (policyID, ruleIndex)
     }
 
@@ -220,7 +325,10 @@ struct RuleSink {
         _ code: UInt32, policyID: UInt16, ruleIndex: UInt32
     ) {
         bounds.minGeoIPRule = min(bounds.minGeoIPRule, ruleIndex)
-        if let old = geoIPMap[code], old.rule <= ruleIndex { return }
+        if let old = geoIPMap[code], old.rule <= ruleIndex {
+            noteShadowed(ruleIndex: ruleIndex, by: old.rule)
+            return
+        }
         geoIPMap[code] = (policyID, ruleIndex)
     }
 
@@ -289,7 +397,9 @@ struct SuffixTrieBuilder {
 
     private(set) var nodes: [BuildNode] = [BuildNode()]
 
-    mutating func addSuffix(domain: Span<UInt8>, policy: UInt16, rule: UInt32) {
+    /// 返回被更早规则占用的终结点序号；未覆盖时返回 `nil`。
+    @discardableResult
+    mutating func addSuffix(domain: Span<UInt8>, policy: UInt16, rule: UInt32) -> UInt32? {
         // Walk labels right-to-left (TLD first) with no intermediate arrays.
         // Callers pass validated domains, so labels are non-empty; the walk
         // mirrors left-to-right splitting exactly even for invalid input.
@@ -310,8 +420,9 @@ struct SuffixTrieBuilder {
             if start == 0 { break }
             end = start - 1
         }
-        if let current = nodes[node].terminal, current.rule <= rule { return }
+        if let current = nodes[node].terminal, current.rule <= rule { return current.rule }
         nodes[node].terminal = (policy, rule)
+        return nil
     }
 }
 
@@ -332,7 +443,9 @@ struct IPNodeBuilder {
         self.bitWidth = bitWidth
     }
 
-    mutating func insert(address: UInt128, prefix: UInt8, policy: UInt16, rule: UInt32) {
+    /// 返回被更早规则占用的同前缀序号；未覆盖时返回 `nil`。
+    @discardableResult
+    mutating func insert(address: UInt128, prefix: UInt8, policy: UInt16, rule: UInt32) -> UInt32? {
         var node = 0
         var bit = bitWidth - 1
         let stopBit = bitWidth - Int(prefix) // descend `prefix` bits from the MSB
@@ -358,7 +471,9 @@ struct IPNodeBuilder {
             terminal.policy = policy
             terminal.rule = rule
             nodes[node] = terminal
+            return nil
         }
+        return terminal.rule
     }
 }
 

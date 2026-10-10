@@ -38,6 +38,35 @@ import Testing
         #expect(result.stderr.contains("rules.txt:2:1"))
     }
 
+    @Test func checkReportsShadowedAndUnreachableRules() {
+        let files = ["rules.txt": "DOMAIN,a.com,DIRECT\nDOMAIN,a.com,PROXY\nMATCH,DIRECT\nDOMAIN,c.com,X"]
+        let result = ClashRuleTool.run(["check", "rules.txt"], readFile: reader(files))
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("警告：覆盖 1 条，MATCH 之后 1 条，空规则集 0 个"))
+        #expect(result.stdout.contains("第 2 行 DOMAIN,a.com,PROXY 被第 1 行覆盖，永远不会生效"))
+        #expect(result.stdout.contains("第 4 行 DOMAIN,c.com,X 位于第 3 行的 MATCH 之后，永远不会生效"))
+    }
+
+    @Test func checkReportsEmptyRuleSet() {
+        let files = [
+            "rules.txt": "RULE-SET,ads,REJECT\nMATCH,DIRECT",
+            "ads.txt": "# no rules yet\n",
+        ]
+        let result = ClashRuleTool.run(
+            ["check", "rules.txt", "--rule-set", "ads=ads.txt"],
+            readFile: reader(files)
+        )
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("第 1 行引用的规则集 ads 为空"))
+    }
+
+    @Test func checkWithoutProblemsReportsNoWarningsAndFingerprint() {
+        let files = ["rules.txt": "DOMAIN,a.com,DIRECT\nMATCH,PROXY"]
+        let result = ClashRuleTool.run(["check", "rules.txt"], readFile: reader(files))
+        #expect(result.stdout.contains("警告：无"))
+        #expect(result.stdout.contains("配置指纹：0x"))
+    }
+
     @Test func missingRulesFileIsFailure() {
         let result = ClashRuleTool.run(["check", "absent.txt"], readFile: reader([:]))
         #expect(result.exitCode == 1)

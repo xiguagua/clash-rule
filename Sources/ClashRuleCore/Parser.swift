@@ -183,6 +183,7 @@ struct RuleParser {
         activeRuleSets: inout Set<[UInt8]>,
         into sink: inout RuleSink
     ) throws(RuleParseError) {
+        sink.beginLine(line: line)
         let base = range.lowerBound
         var start = base
         var stop = range.upperBound
@@ -336,6 +337,9 @@ struct RuleParser {
                 "circular reference to rule-set '\(String(decoding: nameBytes, as: UTF8.self))'"
             )
         }
+        sink.enterRuleSet()
+        defer { sink.exitRuleSet() }
+        let entriesBefore = sink.ruleSetEntryCount
         if let byteMap = byteRuleSets, let data = byteMap[nameBytes] {
             activeRuleSets.insert(nameBytes)
             defer { activeRuleSets.remove(nameBytes) }
@@ -373,6 +377,9 @@ struct RuleParser {
                 .unknownRuleSet, line: line, column: column,
                 "rule-set '\(String(decoding: nameBytes, as: UTF8.self))' not found"
             )
+        }
+        if sink.ruleSetEntryCount == entriesBefore {
+            sink.noteEmptyRuleSet(name: nameBytes)
         }
     }
 
@@ -548,6 +555,7 @@ struct RuleParser {
             ), !arg.isEmpty else {
                 throw RuleParseError(.malformedLine, line: line, column: 1, "expected TYPE,ARG in rule-set")
             }
+            sink.countRuleSetEntry()
             var hasNoResolve = inheritedNoResolve
             var segmentCount = 2
             var firstInvalidFlag: Range<Int>? = nil

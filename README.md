@@ -55,9 +55,11 @@ clash-rule check rules.txt [--rule-set 名称=路径]...
 clash-rule explain rules.txt --domain www.example.com --ip 10.1.2.3 --port 443 --network tcp
 ```
 
+`check` 除了规则数和快照大小，还会输出配置指纹，并列出永远不会生效的规则：被更早规则完全覆盖的规则、位于首条 `MATCH` 之后的规则，以及内容为空的规则集。
+
 `explain` 会逐个类别列出求值结果，标出胜出者，并说明被覆盖的命中是被哪条规则覆盖的。RULE-SET 需要通过 `--rule-set` 指定文件。
 
-源行号依赖 `Diagnostics` trait，默认关闭。需要显示行号时这样构建和运行：
+`explain` 的源行号依赖 `Diagnostics` trait，默认关闭（`check` 的行号不依赖它）。需要在 `explain` 中显示行号时这样构建和运行：
 
 ```bash
 swift run --traits Diagnostics clash-rule explain rules.txt --domain example.com

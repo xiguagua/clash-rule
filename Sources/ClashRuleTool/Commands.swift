@@ -33,13 +33,7 @@ public enum ClashRuleTool {
     private static func check(_ options: CheckOptions, readFile: (String) throws -> String) -> ToolResult {
         do {
             let loaded = try load(options.rulesPath, ruleSets: options.ruleSets, readFile: readFile)
-            let lines = [
-                "编译通过：\(loaded.path)",
-                "规则数：\(loaded.rules.ruleCount)",
-                "策略数：\(loaded.rules.policyCount)",
-                "快照大小：\(loaded.rules.approximateMemoryBytes) 字节",
-            ]
-            return ToolResult(exitCode: 0, stdout: lines.joined(separator: "\n") + "\n", stderr: "")
+            return ToolResult(exitCode: 0, stdout: renderCheck(loaded), stderr: "")
         } catch {
             return ToolResult(exitCode: 1, stdout: "", stderr: error.message + "\n")
         }
@@ -83,8 +77,8 @@ public enum ClashRuleTool {
         }
         let text = try read(path, readFile: readFile)
         do {
-            let rules = try RuleCompiler.compile(text, ruleSets: contents)
-            return LoadedRules(path: path, text: text, rules: rules)
+            let result = try RuleCompiler.compileWithReport(text, ruleSets: contents)
+            return LoadedRules(path: path, text: text, rules: result.rules, report: result.report)
         } catch {
             throw ToolFailure("\(path):\(error)")
         }
@@ -126,12 +120,13 @@ struct LoadedRules {
     let path: String
     let text: String
     let rules: CompiledRules
+    let report: CompileReport
 }
 
 private let usage = """
 用法：
   clash-rule check <规则文件> [--rule-set 名称=路径]...
-      编译规则文件，输出规则数与快照大小。
+      编译规则文件，输出规则数、快照大小、配置指纹，以及永远不会生效的规则和空规则集。
   clash-rule explain <规则文件> [选项] [--rule-set 名称=路径]...
       对一个请求逐类别求值，说明命中、未命中以及被覆盖的原因。
   clash-rule help
