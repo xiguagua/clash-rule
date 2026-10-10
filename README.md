@@ -28,7 +28,7 @@
 ## 环境要求
 
 - Swift 6.4+（`swift-tools-version:6.4`）
-- macOS 27 / iOS 27 / tvOS 27 / watchOS 27 / visionOS 27
+- macOS 27 / iOS 27 / tvOS 27
 
 ## 构建与测试
 

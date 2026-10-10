@@ -5,7 +5,7 @@ Swift implementation of a Clash rule engine. Source of truth: `docs/PLAN.md`.
 ## Commands & Status
 
 - **Status**: See `docs/PLAN.md` § Current State for current milestone.
-- **Toolchain**: Swift 6.4+ (`swift-tools-version:6.4`, `.swiftLanguageMode(.v6)`); platforms macOS 27 / iOS 27 / tvOS 27 / watchOS 27 / visionOS 27.
+- **Toolchain**: Swift 6.4+ (`swift-tools-version:6.4`, `.swiftLanguageMode(.v6)`); platforms macOS 27 / iOS 27 / tvOS 27.
 - **Test**: `swift test` (required before every commit).
 - **Benchmark**: `./scripts/benchmark.sh` (full 100k vs mihomo) or `./scripts/benchmark.sh --quick` (10k fast smoke). Supports `--skip-build`, `--markdown`, `--json`.
 

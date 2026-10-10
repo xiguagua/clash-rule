@@ -7,8 +7,6 @@ let package = Package(
         .macOS("27.0"),
         .iOS("27.0"),
         .tvOS("27.0"),
-        .watchOS("27.0"),
-        .visionOS("27.0"),
     ],
     products: [
         .library(name: "ClashRuleCore", targets: ["ClashRuleCore"]),
