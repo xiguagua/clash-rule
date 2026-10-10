@@ -1,8 +1,30 @@
 import Testing
 import Foundation
+#if canImport(Darwin)
+import ClashRuleAllocCounter
+#endif
 @testable import ClashRuleCore
 
 // MARK: - Fixtures
+
+#if canImport(Darwin)
+private func countAllocations(_ body: () -> Void) -> UInt64 {
+    clash_rule_alloc_tracking_begin()
+    body()
+    return clash_rule_alloc_tracking_end()
+}
+
+@inline(never)
+private func makeBuffer(_ count: Int) -> [UInt8] {
+    [UInt8](repeating: 1, count: count)
+}
+
+#if DEBUG
+private let optimizedBuild = false
+#else
+private let optimizedBuild = true
+#endif
+#endif
 
 private func compile(_ text: String) throws -> CompiledRules {
     try RuleCompiler.compile(text)
@@ -375,30 +397,40 @@ private func matchDomain(
         }
     }
 
-    @Test func zeroAllocationHotPath() throws {
-        let (rules, matcher) = try make()
-        _ = rules
-        let sample = Array("www.example.com".utf8)
-
-        #if canImport(Darwin)
-        let zone = malloc_default_zone()
-
-        // Warm up
-        _ = matcher.match(domain: sample.span, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
-
-        // Check zone size in use across repeated iterations
-        var stats1 = malloc_statistics_t()
-        var stats2 = malloc_statistics_t()
-        malloc_zone_statistics(zone, &stats1)
-        for _ in 0..<100 {
-            _ = matcher.match(domain: sample.span, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500)
+    #if canImport(Darwin)
+    @Test func allocationCounterDetectsAllocations() {
+        let allocations = countAllocations {
+            _ = makeBuffer(256)
         }
-        malloc_zone_statistics(zone, &stats2)
-        // No allocations were leaked or performed by match itself; stats2.size_allocated <= stats1.size_allocated + noise
-        // Ensure size_allocated did not increase due to match iterations
-        #expect(stats2.size_in_use <= stats1.size_in_use)
-        #endif
+        #expect(allocations >= 1)
     }
+
+    @Test(.enabled(if: optimizedBuild, "Zero-allocation is asserted only in optimized builds: swift test -c release"))
+    func zeroAllocationHotPath() throws {
+        let (_, matcher) = try make()
+        let example = Array("www.example.com".utf8)
+        let google = Array("google.com".utf8)
+        let unknown = Array("unknown.invalid".utf8)
+        var hits = 0
+
+        let allocations = countAllocations {
+            for _ in 0..<100 {
+                if matcher.match(domain: example.span, targetAddress: v4(0x0A01_0203), targetPort: 8085, sourcePort: 1500) != nil {
+                    hits += 1
+                }
+                if matcher.match(domain: google.span, targetPort: 443) != nil {
+                    hits += 1
+                }
+                if matcher.match(domain: unknown.span, targetAddress: v4(0x0B00_0001), targetPort: 9) != nil {
+                    hits += 1
+                }
+            }
+        }
+
+        #expect(hits == 300)
+        #expect(allocations == 0)
+    }
+    #endif
 
     @Test func sourceIPCIDR() throws {
         let text = """

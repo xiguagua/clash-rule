@@ -42,9 +42,14 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .target(
+            name: "ClashRuleAllocCounter",
+            path: "Tests/ClashRuleAllocCounter",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "ClashRuleCoreTests",
-            dependencies: ["ClashRuleCore"],
+            dependencies: ["ClashRuleCore", "ClashRuleAllocCounter"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
